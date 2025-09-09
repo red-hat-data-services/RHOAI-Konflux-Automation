@@ -38,27 +38,50 @@ class catalog_validator:
 
     def validate_catalogs(self):
         missing_bundles = {}
+        incorrect_3x_bundles = {}
+
         for ocp_version in self.supported_ocp_versions:
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{ocp_version}/rhods-operator/catalog.yaml')
             bundles = catalog_dict['olm.bundle']
+            numeric_ocp_version = int(ocp_version.replace('v4.', '4'))
             missing_bundles[ocp_version] = []
+            incorrect_3x_bundles[ocp_version] = []
+
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'rhods-operator.{rhoai_version}'
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
-                    missing_bundles[ocp_version].append(operator_name)
+                    if not (rhoai_version.startswith(
+                            'v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30):  # bypassing check for 3.0 for OCP < 4.19
+                        missing_bundles[ocp_version].append(operator_name)
+
+                if operator_name in bundles and rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30: # adding check to ensure 3.x doesn't land on OCP < 4.19
+                    incorrect_3x_bundles[ocp_version].append(operator_name)
 
         print('missing_bundles', missing_bundles)
+        print('incorrect_3x_bundles', incorrect_3x_bundles)
+
+        bundles_missing, bundles_incorrect = False, False
 
         if list(itertools.chain.from_iterable([bundles for ocp_version, bundles in missing_bundles.items()])):
             print('Following bundles are missing from the catalogs:', missing_bundles)
             print('Exiting, please fix the missing bundles')
-            sys.exit(1)
+            bundles_missing = True
         else:
             print('No missing bundles found in all the catalogs')
 
+        if list(itertools.chain.from_iterable([bundles for ocp_version, bundles in incorrect_3x_bundles.items()])):
+            print('Following 3.x bundles are incorrectly added to unsupported OCP versions:', incorrect_3x_bundles)
+            print('Exiting, please fix the incorrect bundles')
+            incorrect_3x_bundles = True
+        else:
+            print('No incorrect 3.x bundles found in all the catalogs')
+
+        if bundles_missing or bundles_incorrect:
+            sys.exit(1)
+
     def validate_pcc(self):
         missing_bundles = {}
-        incorrect_3x_bundles = {}
+
 
         for pcc_file in self.pcc_catalog_files:
             ocp_version = re.search('^catalog-(.*).yaml', pcc_file).group(1)
@@ -67,20 +90,17 @@ class catalog_validator:
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{pcc_file}')
             bundles = catalog_dict['olm.bundle']
             missing_bundles[pcc_file] = []
-            incorrect_3x_bundles[pcc_file] = []
+
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'rhods-operator.{rhoai_version}'
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
                     if not (rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30): # bypassing check for 3.0 for OCP < 4.19
                         missing_bundles[pcc_file].append(operator_name)
 
-                # if operator_name in bundles and rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30: # adding check to ensure 3.x doesn't land on OCP < 4.19
-                #     incorrect_3x_bundles[pcc_file].append(operator_name)
-
 
 
         print('missing_bundles', missing_bundles)
-        print('incorrect_3x_bundles', incorrect_3x_bundles)
+
 
         if list(itertools.chain.from_iterable([bundles for ocp_version, bundles in missing_bundles.items()])):
             print('Following bundles are missing from the catalogs:', missing_bundles)
