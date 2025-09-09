@@ -50,7 +50,13 @@
 #     count += 1
 #     print(f'{repo.replace("rhoai/", "").replace("-rhel8", "")}-v2-13', end='\t')
 # print(count)
+#
+# from pathlib import Path
+# abs='/home/dchouras/RHODS/DevOps/rhods-operator/Dockerfiles/bundle.Dockerfile'
+# print(f'{Path(abs).parent.absolute()}')
 
-from pathlib import Path
-abs='/home/dchouras/RHODS/DevOps/rhods-operator/Dockerfiles/bundle.Dockerfile'
-print(f'{Path(abs).parent.absolute()}')
+import re
+
+text = 'catalog-v4.17.yaml'
+match = re.search('^catalog-(.*).yaml', text)
+print(match.group(1))

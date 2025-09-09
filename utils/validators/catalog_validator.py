@@ -3,16 +3,24 @@ import argparse
 import yaml
 from collections import defaultdict
 import itertools
+import re
+
 class catalog_validator:
     MISSING_BUNDLE_EXCEPTIONS = ['rhods-operator.2.9.0', 'rhods-operator.2.9.1'] #ref - RHOAIENG-8828
-    def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path):
+    MIN_OCP_VERSION_FOR_RHOAI_30 = 419
+
+    def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation):
         self.build_config_path = build_config_path
         self.catalog_folder_path = catalog_folder_path
         self.shipped_rhoai_versions_path = shipped_rhoai_versions_path
-        self.pcc_catalog_files = ['bundle_object_catalog.yaml', 'csv_meta_catalog.yaml']
+
+        self.operation = operation
 
         self.build_config = yaml.safe_load(open(self.build_config_path))
-        self.supported_ocp_versions = sorted(list(set(self.build_config['config']['supported-ocp-versions']['release'] + [item['name'] for item in self.build_config['config']['supported-ocp-versions']['build']])))
+        self.supported_ocp_versions = sorted(list(set(self.build_config['config']['supported-ocp-versions']['release'] + [item['name'] for item in self.build_config['config']['supported-ocp-versions']['build']]))) if operation == 'validate-catalogs' \
+            else sorted(self.build_config['config']['supported-ocp-versions']) if operation == 'validate-pcc' else None
+        self.pcc_catalog_files = [f'catalog-{ocp_version}.yaml' for ocp_version in self.supported_ocp_versions]
+
         self.shipped_rhoai_versions = open(self.shipped_rhoai_versions_path).readlines()
 
         self.shipped_rhoai_versions = sorted(list(
@@ -50,17 +58,29 @@ class catalog_validator:
 
     def validate_pcc(self):
         missing_bundles = {}
+        incorrect_3x_bundles = {}
 
         for pcc_file in self.pcc_catalog_files:
+            ocp_version = re.search('^catalog-(.*).yaml', pcc_file).group(1)
+            numeric_ocp_version = int(ocp_version.replace('v4.', '4'))
+
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{pcc_file}')
             bundles = catalog_dict['olm.bundle']
             missing_bundles[pcc_file] = []
+            incorrect_3x_bundles[pcc_file] = []
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'rhods-operator.{rhoai_version}'
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
-                    missing_bundles[pcc_file].append(operator_name)
+                    if not (rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30): # bypassing check for 3.0 for OCP < 4.19
+                        missing_bundles[pcc_file].append(operator_name)
+
+                # if operator_name in bundles and rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30: # adding check to ensure 3.x doesn't land on OCP < 4.19
+                #     incorrect_3x_bundles[pcc_file].append(operator_name)
+
+
 
         print('missing_bundles', missing_bundles)
+        print('incorrect_3x_bundles', incorrect_3x_bundles)
 
         if list(itertools.chain.from_iterable([bundles for ocp_version, bundles in missing_bundles.items()])):
             print('Following bundles are missing from the catalogs:', missing_bundles)
@@ -82,10 +102,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'validate-catalogs':
-        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path)
+        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation)
         validator.validate_catalogs()
     elif args.operation.lower() == 'validate-pcc':
-        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path)
+        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation)
         validator.validate_pcc()
 
 
