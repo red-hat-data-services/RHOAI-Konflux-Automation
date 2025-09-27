@@ -28,7 +28,6 @@ class catalog_validator:
         self.build_config = yaml.safe_load(open(self.build_config_path))
         self.supported_ocp_versions = sorted(list(set(self.build_config['config']['supported-ocp-versions']['release'] + [item['name'] for item in self.build_config['config']['supported-ocp-versions']['build']]))) if operation == 'validate-catalogs' \
             else sorted(self.build_config['config']['supported-ocp-versions'], key=lambda x: x['version']) if operation == 'validate-pcc' else None
-        self.pcc_catalog_files = [f'catalog-{ocp_version["version"]}.yaml' for ocp_version in self.supported_ocp_versions]
 
         self.shipped_rhoai_versions = open(self.shipped_rhoai_versions_path).readlines()
 
@@ -48,7 +47,7 @@ class catalog_validator:
     def validate_catalogs(self):
         missing_bundles = {}
         incorrect_3x_bundles = {}
-
+        # need to get the global config.yaml and process the discontinuity map in order to ignore the unsupported OCP versions like 4.14, same as what was done for pcc validation
         for ocp_version in self.supported_ocp_versions:
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{ocp_version}/rhods-operator/catalog.yaml')
             bundles = catalog_dict['olm.bundle']
@@ -91,8 +90,10 @@ class catalog_validator:
     def validate_pcc(self):
         missing_bundles = {}
         discontinuity_map = {ocp_version['version']:ocp_version['discontinued-from'] if 'discontinued-from' in ocp_version else 'rhods-operator.9.99.99' for ocp_version in self.supported_ocp_versions }
+        pcc_catalog_files = [f'catalog-{ocp_version["version"]}.yaml' for ocp_version in
+                                  self.supported_ocp_versions]
 
-        for pcc_file in self.pcc_catalog_files:
+        for pcc_file in pcc_catalog_files:
             ocp_version = re.search('^catalog-(.*).yaml', pcc_file).group(1)
             numeric_ocp_version = int(ocp_version.replace('v4.', '4'))
 
