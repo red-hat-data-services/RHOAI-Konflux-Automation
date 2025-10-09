@@ -46,15 +46,17 @@ class fbc_processor:
     def parse_patch_yaml(self):
         return yaml.safe_load(open(self.patch_yaml_path))
     def patch_catalog_yaml(self):
-        if 'olm.package' in self.patch_dict['patch']:
-            self.patch_olm_package()
-        if 'olm.channels' in self.patch_dict['patch']:
-            self.patch_olm_channels()
-        self.patch_olm_bundles()
+        patched = self.patch_olm_bundles()
 
-        self.process_push_pipeline()
+        if patched:
+            if 'olm.package' in self.patch_dict['patch']:
+                self.patch_olm_package()
+            if 'olm.channels' in self.patch_dict['patch']:
+                self.patch_olm_channels()
 
-        self.write_output_catalog()
+            self.process_push_pipeline()
+
+            self.write_output_catalog()
 
     def write_output_catalog(self):
         docs = [doc for schema, schema_val in self.catalog_dict.items() for name, doc in schema_val.items()]
@@ -139,7 +141,12 @@ class fbc_processor:
     def patch_olm_bundles(self):
         SCHEMA = 'olm.bundle'
         current_bundle_name = self.current_olm_bundle['name']
-        self.catalog_dict[SCHEMA][current_bundle_name] = self.apply_replacements_to_catalog(self.current_olm_bundle)
+        patched = False
+        if current_bundle_name not in self.catalog_dict[SCHEMA]:
+            self.catalog_dict[SCHEMA][current_bundle_name] = self.apply_replacements_to_catalog(self.current_olm_bundle)
+            patched = True
+        return patched
+
         # apply replacements for bundle image Uri in catalog
         # apply replacements for related images in the catalog
         # replacement of the encoded bundle
