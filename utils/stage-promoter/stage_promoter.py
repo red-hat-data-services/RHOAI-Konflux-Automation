@@ -38,28 +38,35 @@ class stage_promoter:
         objs = yaml.safe_load_all(open(self.release_catalog_yaml_path))
         release_catalog_dict = defaultdict(dict)
         BUNDLE_SCHEMA = 'olm.bundle'
+        patched = False
+
         for obj in objs:
             release_catalog_dict[obj['schema']][obj['name']] = obj
         current_release_bundle_schema = [olm_bundle for name, olm_bundle in release_catalog_dict[BUNDLE_SCHEMA].items() if name == self.current_bundle_name ]
         if current_release_bundle_schema and len(current_release_bundle_schema) == 1:
             current_release_bundle_schema = current_release_bundle_schema[0]
-            self.catalog_dict[BUNDLE_SCHEMA][current_release_bundle_schema['name']] = current_release_bundle_schema
+            if self.current_bundle_name not in self.catalog_dict[BUNDLE_SCHEMA]:
+                self.catalog_dict[BUNDLE_SCHEMA][current_release_bundle_schema['name']] = current_release_bundle_schema
+                patched = True
         elif not current_release_bundle_schema:
             raise Exception(f'No olm.bundle schema found for {self.current_bundle_name} in {self.release_catalog_yaml_path}')
         elif len(current_release_bundle_schema) > 1:
             raise Exception(f'Multiple olm.bundle schema found for {self.current_bundle_name} in {self.release_catalog_yaml_path}')
 
+        return patched
+
 
     def parse_patch_yaml(self):
         return yaml.safe_load(open(self.patch_yaml_path))
     def patch_catalog_yaml(self):
-        if 'olm.package' in self.patch_dict['patch']:
-            self.patch_olm_package()
-        if 'olm.channels' in self.patch_dict['patch']:
-            self.patch_olm_channels()
-        self.patch_olm_bundles()
+        patched = self.patch_olm_bundles()
+        if patched:
+            if 'olm.package' in self.patch_dict['patch']:
+                self.patch_olm_package()
+            if 'olm.channels' in self.patch_dict['patch']:
+                self.patch_olm_channels()
 
-        self.write_output_catalog()
+            self.write_output_catalog()
 
     def write_output_catalog(self):
         docs = [doc for schema, schema_val in self.catalog_dict.items() for name, doc in schema_val.items()]
@@ -87,7 +94,7 @@ class stage_promoter:
 
 
     def patch_olm_bundles(self):
-        self.patch_current_release_bundle_schema()
+        return self.patch_current_release_bundle_schema()
 
 class snapshot_processor:
     GIT_URL_LABEL_KEY = 'git.url'
