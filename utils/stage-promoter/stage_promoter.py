@@ -387,7 +387,7 @@ if __name__ == '__main__':
         promoter = stage_promoter(catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, release_catalog_yaml_path=args.release_catalog_yaml_path, output_file_path=args.output_file_path, rhoai_version=args.rhoai_version)
         promoter.patch_catalog_yaml()
     elif args.operation.lower() == 'monitor-fbc-builds':
-        processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit)
+        processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit, pipelineruns=args.pipelineruns, pipeline_type=args.pipeline_type, failed_pipelines_info_path=args.failed_pipelines_info_path)
         processor.monitor_fbc_builds()
     elif args.operation.lower() == 'monitor-fbc-pipelines':
         processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit, pipelineruns=args.pipelineruns, pipeline_type=args.pipeline_type, failed_pipelines_info_path=args.failed_pipelines_info_path)
