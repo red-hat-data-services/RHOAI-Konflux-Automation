@@ -60,7 +60,9 @@ class catalog_validator:
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
                     if not (rhoai_version.startswith(
                             'v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30):  # bypassing check for 3.0 for OCP < 4.19
-                        missing_bundles[ocp_version].append(operator_name)
+                        print(f"Skipping the catalog validation for {rhoai_version} bundle for OCP {ocp_version}, since 3.x is not shipped on these OCP versions!")
+                        continue
+                    missing_bundles[ocp_version].append(operator_name)
 
                 if operator_name in bundles and rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30: # adding check to ensure 3.x doesn't land on OCP < 4.19
                     incorrect_3x_bundles[ocp_version].append(operator_name)
