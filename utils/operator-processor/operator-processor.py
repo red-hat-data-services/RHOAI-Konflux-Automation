@@ -98,7 +98,8 @@ class operator_processor:
                 if git_url:
                     manifest_config[self.GIT_URL_LABEL_KEY] = git_url # temporary making git.url optional
                 if git_commit:
-                    manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
+                    # manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
+                    manifest_config['git.commit'] = git_commit # temporary change
                 else:
                     missing_git_labels.append(component)
         self.manifest_config_dict['additional_meta'] = {}
