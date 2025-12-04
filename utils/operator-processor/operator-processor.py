@@ -30,7 +30,8 @@ class operator_processor:
         ruyaml.representer.RoundTripRepresenter.ignore_aliases = lambda x, y: True
 
         self.operands_map_dict = ruyaml.load(open(self.operands_map_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        self.nudging_yaml_dict = ruyaml.load(open(self.nudging_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
+        if self.nudging_yaml_path:
+            self.nudging_yaml_dict = ruyaml.load(open(self.nudging_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
         self.manifest_config_dict = ruyaml.load(open(self.manifest_config_path), Loader=ruyaml.RoundTripLoader,
                                              preserve_quotes=True)
         self.push_pipeline_operation = push_pipeline_operation
@@ -71,7 +72,8 @@ class operator_processor:
             ruyaml.dump(self.push_pipeline_dict, open(self.push_pipeline_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper,
                     default_flow_style=False)
     def write_output_files(self):
-        ruyaml.dump(self.nudging_yaml_dict, open(self.nudging_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
+        if self.nudging_yaml_path:
+            ruyaml.dump(self.nudging_yaml_dict, open(self.nudging_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
         ruyaml.dump(self.operands_map_dict, open(self.operands_map_path, 'w'), Dumper=ruyaml.RoundTripDumper,
                     default_flow_style=False)
         ruyaml.dump(self.manifest_config_dict, open(self.manifest_config_path, 'w'), Dumper=ruyaml.RoundTripDumper,
@@ -111,11 +113,13 @@ class operator_processor:
         new_components = [CommentedMap(component) for component in new_components]
         self.operands_map_dict['relatedImages'] += new_components
 
+
         #nudging yaml sync
-        existing_components = [component['name'] for component in self.nudging_yaml_dict['relatedImages']]
-        new_components = [component for component in self.patch_dict['patch']['relatedImages'] if component['name'] not in existing_components]
-        new_components = [CommentedMap(component) for component in new_components]
-        self.nudging_yaml_dict['relatedImages'] += new_components
+        if self.nudging_yaml_path:
+            existing_components = [component['name'] for component in self.nudging_yaml_dict['relatedImages']]
+            new_components = [component for component in self.patch_dict['patch']['relatedImages'] if component['name'] not in existing_components]
+            new_components = [CommentedMap(component) for component in new_components]
+            self.nudging_yaml_dict['relatedImages'] += new_components
 
     def patch_related_images(self):
         SCHEMA = 'relatedImages'
@@ -278,7 +282,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--operands-map-path', required=False,
                         help='Path of the operands map yaml', dest='operands_map_path')
     parser.add_argument('-n', '--nudging-yaml-path', required=False,
-                        help='Path of the nudging yaml', dest='nudging_yaml_path')
+                        help='Path of the nudging yaml', dest='nudging_yaml_path', default='')
     parser.add_argument('-m', '--manifest-config-path', required=False,
                         help='Path of the manifest config yaml', dest='manifest_config_path')
     parser.add_argument('-v', '--rhoai-version', required=False,
