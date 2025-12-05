@@ -18,6 +18,11 @@ class catalog_validator:
             other.semver = other.version.replace('rhods-operator.', '').split('.')
             return True if self.semver[0] > other.semver[0] else (True if self.semver[1] > other.semver[1] else self.semver[2] >= other.semver[2] if self.semver[1] == other.semver[1] else False) if self.semver[0] == other.semver[0] else False
 
+        def __le__(self, other):
+            self.semver = self.version.replace('rhods-operator.', '').split('.')
+            other.semver = other.version.replace('rhods-operator.', '').split('.')
+            return True if self.semver[0] < other.semver[0] else (True if self.semver[1] < other.semver[1] else self.semver[2] <= other.semver[2] if self.semver[1] == other.semver[1] else False) if self.semver[0] == other.semver[0] else False
+
     def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation):
         self.build_config_path = build_config_path
         self.catalog_folder_path = catalog_folder_path
@@ -92,6 +97,7 @@ class catalog_validator:
     def validate_pcc(self):
         missing_bundles = {}
         discontinuity_map = {ocp_version['version']:ocp_version['discontinued-from'] if 'discontinued-from' in ocp_version else 'rhods-operator.9.99.99' for ocp_version in self.supported_ocp_versions }
+        onboarding_map = {ocp_version['version']:ocp_version['onboarded-since'] if 'onboarded-since' in ocp_version else 'rhods-operator.0.0.0' for ocp_version in self.supported_ocp_versions }
         pcc_catalog_files = [f'catalog-{ocp_version["version"]}.yaml' for ocp_version in
                                   self.supported_ocp_versions]
 
@@ -107,7 +113,7 @@ class catalog_validator:
                 operator_name = f'rhods-operator.{rhoai_version}'
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
                     if not (rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30): # bypassing check for 3.0 for OCP < 4.19
-                        if not self.rhods_operator(operator_name) >= self.rhods_operator(discontinuity_map[ocp_version]):
+                        if not self.rhods_operator(operator_name) >= self.rhods_operator(discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(onboarding_map[ocp_version]):
                             missing_bundles[pcc_file].append(operator_name)
                         else:
                             print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
