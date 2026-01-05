@@ -18,7 +18,7 @@ class bundle_processor:
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, quay_tag:str, release_branch:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
         self.build_config_path = build_config_path
         self.bundle_csv_path = bundle_csv_path
         self.patch_yaml_path = patch_yaml_path
@@ -27,7 +27,20 @@ class bundle_processor:
         self.csv_dict = self.parse_csv_yaml()
         self.patch_dict = self.parse_patch_yaml()
         self.build_config = yaml.safe_load(open(self.build_config_path))
-        self.rhoai_version = rhoai_version
+
+        # handles backward compatibility for rhoai_version
+        if rhoai_version is None and (quay_tag is None or release_branch is None):
+            raise ValueError("When rhoai_version is not defined, quay_tag and release_branch must both be defined")
+        elif rhoai_version is not None and (quay_tag is not None or release_branch is not None):
+            raise ValueError("When rhoai_version is defined, quay_tag and release_branch should both be undefined")
+
+        if rhoai_version is not None:
+            self.quay_tag = rhoai_version
+            self.release_branch = rhoai_version
+        else:
+            self.quay_tag = quay_tag
+            self.release_branch = release_branch
+
         self.annotation_yaml_path = annotation_yaml_path
         self.annotation_dict = yaml.safe_load(open(self.annotation_yaml_path))
         self.push_pipeline_operation = push_pipeline_operation
@@ -78,11 +91,14 @@ class bundle_processor:
         #execute shell script to checkout the rhods-operator repo with the given git.commit
         currentDir = Path(os.path.abspath(__file__)).parent
         shellScriptPath = f'{currentDir}/./checkout-rhods-operator.sh'
+        print(self.git_labels_meta["map"])
 
         if "odh-rhel9-operator" in self.git_labels_meta["map"]:
             operator_name = "odh-rhel9-operator"
         elif "odh-rhel8-operator" in self.git_labels_meta["map"]:
             operator_name = "odh-rhel8-operator"
+        elif "odh-operator" in self.git_labels_meta["map"]:
+            operator_name = "odh-operator"
 
         git_url = self.git_labels_meta["map"][operator_name][self.GIT_URL_LABEL_KEY]
         git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
@@ -92,7 +108,7 @@ class bundle_processor:
         #self.git_meta += f'{operator_name}.{self.GIT_COMMIT_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
         # odh-dashboard.git.commit="${CI_ODH_DASHBOARD_UPSTREAM_COMMIT}" \
         dest = f'{currentDir}/rhods-operator'
-        self.executeShellScript(f'{shellScriptPath} "{git_url}" {git_commit} {self.rhoai_version} {dest}')
+        self.executeShellScript(f'{shellScriptPath} "{git_url}" {git_commit} {self.release_branch} {dest}')
 
 
 
@@ -245,7 +261,7 @@ class bundle_processor:
             registry = registry_entry['registry']
             for repo_path in registry_entry['repo_mappings']:
                 repo = '/'.join(repo_path.split('/')[1:])
-                tags = qc.get_all_tags(repo, self.rhoai_version)
+                tags = qc.get_all_tags(repo, self.quay_tag)
                 if not tags:
                     print(f'no tags found for {repo}')
                 for tag in tags:
@@ -268,10 +284,10 @@ class bundle_processor:
             org = parts[1]
             qc = quay_controller(org)
             repo = '/'.join(parts[2:])
-            version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
+            version_tag = f'{self.quay_tag}-nightly' if self.build_type.lower() == 'nightly' else self.quay_tag
+            # version_tag = 'main' # workaround
             tags = qc.get_all_tags(repo, version_tag)
             component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
-
             if not tags:
                 print(f'no tags found for {repo}')
                 missing_images.append(repo)
@@ -303,7 +319,11 @@ class bundle_processor:
         if missing_images:
             print('Images missing for following components : ', missing_images)
             sys.exit(1)
-        print('latest_images', json.dumps(latest_images, indent=4))
+        if not latest_images:
+            print(f'Error: latest_images is empty. Verify the tag "{self.quay_tag}" is present in {registry}/{org}/{repo}')
+            sys.exit(1)
+        else:
+            print('latest_images', json.dumps(latest_images, indent=4))
         return latest_images, git_labels_meta
 
 
@@ -421,6 +441,10 @@ if __name__ == '__main__':
                         help='Path of the single-bundle generated using the opm.', dest='image_filter')
     parser.add_argument('-v', '--rhoai-version', required=False,
                         help='The version of Openshift-AI being processed', dest='rhoai_version')
+    parser.add_argument('-q', '--quay-tag', required=False,
+                        help='The quay tag that will be used to create and push the bundle', dest='quay_tag')
+    parser.add_argument('-r', '--release-branch', required=False,
+                        help='The release branch name used to create the bundle', dest='release_branch')
     parser.add_argument('-a', '--annotation-yaml-path', required=False,
                         help='Path of the annotation.yaml from the raw inputs', dest='annotation_yaml_path')
     parser.add_argument('-y', '--push-pipeline-yaml-path', required=False,
@@ -430,7 +454,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, quay_tag=args.quay_tag, release_branch=args.release_branch, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type)
         processor.patch_bundle_csv()
 
     # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'
@@ -439,12 +463,14 @@ if __name__ == '__main__':
     # annotation_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/to-be-processed/bundle/metadata/annotations.yaml'
     # output_file_path = 'output.yaml'
     # rhoai_version = 'rhoai-2.13'
+    # release_branch = 'rhoai-2.13'
+    # quay_tag = 'rhoai-2.13'
     # push_pipeline_operation = 'enable'
     # push_pipeline_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/.tekton/odh-operator-bundle-v2-13-push.yaml'
     #
     #
     # processor = bundle_processor(build_config_path=build_config_path, bundle_csv_path=bundle_csv_path,
-    #                              patch_yaml_path=patch_yaml_path, rhoai_version=rhoai_version,
+    #                              patch_yaml_path=patch_yaml_path, rhoai_version=args.rhoai_version, quay_tag=args.quay_tag, release_branch=args.release_branch,
     #                              output_file_path=output_file_path, annotation_yaml_path=annotation_yaml_path,
     #                              push_pipeline_yaml_path=push_pipeline_yaml_path, push_pipeline_operation=push_pipeline_operation)
     # processor.patch_bundle_csv()
