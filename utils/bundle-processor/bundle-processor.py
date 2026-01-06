@@ -10,6 +10,7 @@ import yaml
 import ruamel.yaml as ruyaml
 import os
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+from git import Repo
 
 import json
 class bundle_processor:
@@ -70,6 +71,8 @@ class bundle_processor:
             self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
                 'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
 
+            self.ODH_OPERATOR_IMAGE_SHA = ODH_OPERATOR_IMAGE[0].split(":")[1]
+
         self.latest_images = self.get_latest_images_from_operands_map()
         self.apply_replacements_to_related_images()
 
@@ -90,29 +93,31 @@ class bundle_processor:
     def get_latest_images_from_operands_map(self):
         #execute shell script to checkout the rhods-operator repo with the given git.commit
         currentDir = Path(os.path.abspath(__file__)).parent
-        shellScriptPath = f'{currentDir}/./checkout-rhods-operator.sh'
-        print(self.git_labels_meta["map"])
 
-        if "odh-rhel9-operator" in self.git_labels_meta["map"]:
-            operator_name = "odh-rhel9-operator"
-        elif "odh-rhel8-operator" in self.git_labels_meta["map"]:
-            operator_name = "odh-rhel8-operator"
-        elif "odh-operator" in self.git_labels_meta["map"]:
-            operator_name = "odh-operator"
+        operator_name = "opendatahub-operator"
+        metadata_repo = "https://github.com/opendatahub-io/odh-build-metadata.git"
+
 
         git_url = self.git_labels_meta["map"][operator_name][self.GIT_URL_LABEL_KEY]
         git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
-        #self.git_meta += f'{operator_name}.{self.GIT_URL_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
-        #self.git_meta += f'{operator_name}.{self.GIT_COMMIT_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
-        # odh-dashboard.git.commit="${CI_ODH_DASHBOARD_UPSTREAM_COMMIT}" \
-        dest = f'{currentDir}/rhods-operator'
-        self.executeShellScript(f'{shellScriptPath} "{git_url}" {git_commit} {self.release_branch} {dest}')
+        
+        dest = f'{currentDir}/odh-build-metadata'
+        repo = Repo.init(dest)
+
+        # Create a new remote if there isn't one already created
+        if not repo.remotes:
+            origin = repo.create_remote("origin", metadata_repo)
+        else:
+            origin = repo.remotes[0]
+
+        origin.fetch()
+        git = repo.git()
+        git.checkout("origin/main", "--", "components/odh-operator")
 
 
-
-        operands_map_path = f'{dest}/build/operands-map.yaml'
+        operands_map_path = f'{dest}/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}/operands-map.yaml'
 
 
         latest_images = ruyaml.load(open(operands_map_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
@@ -134,16 +139,18 @@ class bundle_processor:
 
     def generate_bundle_build_args(self):
         currentDir = Path(os.path.abspath(__file__)).parent
-        dest = f'{currentDir}/rhods-operator'
-        self.manifest_config_path = f'{dest}/build/manifests-config.yaml'
+        self.manifest_config_path = f'{currentDir}/odh-build-metadata/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}/manifests-config.yaml'
         self.manifest_config_dict = yaml.safe_load(open(self.manifest_config_path))
+        
 
         for component, git_meta in {**self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
-            if 'ref_type' not in git_meta:
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
-                # self.git_meta += f'{component}.{self.GIT_URL_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
-                # self.git_meta += f'{component}.{self.GIT_COMMIT_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
+            if 'ref_type' in git_meta:
+                continue
+            elif self.GIT_URL_LABEL_KEY not in git_meta or self.GIT_COMMIT_LABEL_KEY not in git_meta:
+                print(f"WARNING: git-related labels not found for this manifests-config entry: {git_meta}\n Skipping.")
+                continue
+            self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
+            self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
