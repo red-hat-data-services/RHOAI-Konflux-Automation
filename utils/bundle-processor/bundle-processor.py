@@ -146,11 +146,19 @@ class bundle_processor:
         for component, git_meta in {**self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
             if 'ref_type' in git_meta:
                 continue
-            elif self.GIT_URL_LABEL_KEY not in git_meta or self.GIT_COMMIT_LABEL_KEY not in git_meta:
-                print(f"WARNING: git-related labels not found for this manifests-config entry: {git_meta}\n Skipping.")
-                continue
-            self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
-            self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
+
+            if self.GIT_URL_LABEL_KEY in git_meta:
+                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
+            else:
+                print(f"WARNING: git.url label not found for manifests-config entry of {component}.\n  {git_meta}")
+
+            if self.GIT_COMMIT_LABEL_KEY in git_meta:
+                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
+            else:
+                print(f"WARNING: git.commit label not found for manifests-config entry of {component}. Trying vcs-ref instead.\n  {git_meta}")
+                workaround = 'vcs-ref'
+                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[workaround]}\n'
+
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
