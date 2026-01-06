@@ -105,7 +105,10 @@ class operator_processor:
         self.manifest_config_dict['additional_meta'] = {}
         for component, git_meta in self.git_labels_meta['map'].items():
             if component not in self.manifest_config_dict['map']:
-                self.manifest_config_dict['additional_meta'][component] = git_meta
+                if component in self.manifest_config_dict['additional_meta']:
+                    self.manifest_config_dict['additional_meta'][component]['git.commit'] = git_meta['vcs-ref'] if 'vcs-ref' in git_meta else git_meta['git.commit'] if 'git.commit' in git_meta else ''
+                else:
+                    self.manifest_config_dict['additional_meta'][component] = git_meta
         if missing_git_labels:
             print('git.url and git.commit labels missing/empty for : ', missing_git_labels)
             sys.exit(1)
