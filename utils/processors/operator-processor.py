@@ -6,7 +6,10 @@ import yaml
 import ruamel.yaml as ruyaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 from controller.quay_controller import quay_controller
+from logger.logger import getLogger
 import json
+
+logger = getLogger("processor")
 
 class operator_processor:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
@@ -99,7 +102,7 @@ class operator_processor:
             if component not in self.manifest_config_dict['map']:
                 self.manifest_config_dict['additional_meta'][component] = git_meta
         if missing_git_labels:
-            print('git.url and git.commit labels missing/empty for : ', missing_git_labels)
+            logger.error('git.url and git.commit labels missing/empty for : %s', missing_git_labels)
             sys.exit(1)
     def sync_yamls_from_bundle_patch(self):
         # operands map sync
@@ -136,7 +139,7 @@ class operator_processor:
         git_labels_meta = {'map': {}}
         missing_images = []
         for image_entry in [image for image in self.operands_map_dict['relatedImages']  if 'FBC' not in image['name'] and 'BUNDLE' not in image['name'] and 'ODH_OPERATOR' not in image['name'] ]:
-            print(f'Processing image entry - {image_entry}')
+            logger.info('Processing image entry - %s', image_entry)
             parts = image_entry['value'].split('@')[0].split('/')
             registry = parts[0]
             org = parts[1]
@@ -146,7 +149,7 @@ class operator_processor:
             component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
 
             if not tags:
-                print(f'no tags found for {repo}')
+                logger.warning('no tags found for %s', repo)
                 missing_images.append(repo)
             for tag in tags:
                 sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
@@ -158,13 +161,13 @@ class operator_processor:
                     latest_images.append(image_entry)
 
                     manifest_digest = tag["manifest_digest"]
-                    print(f'manifest_digest = {manifest_digest}')
+                    logger.debug('manifest_digest = %s', manifest_digest)
                     if tag['is_manifest_list'] == True:
-                        print('Found to be a multi-arch image..')
+                        logger.info('Found to be a multi-arch image..')
                         image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
                         if image_manifest_digests:
                             manifest_digest = image_manifest_digests[0]
-                            print(f'will be using the image with manifest_digest {manifest_digest} to find the tags and lables')
+                            logger.debug('will be using the image with manifest_digest %s to find the tags and lables', manifest_digest)
 
 
                     labels = qc.get_git_labels(repo, manifest_digest)
@@ -177,11 +180,10 @@ class operator_processor:
 
                     break
         if missing_images:
-            print('Images missing for following components : ', missing_images)
+            logger.error('Images missing for following components : %s', missing_images)
             sys.exit(1)
-        print('latest_images', json.dumps(latest_images, indent=4))
-        print()
-        print('git_labels_meta', json.dumps(git_labels_meta, indent=4))
+        logger.debug('latest_images %s', json.dumps(latest_images, indent=4))
+        logger.debug('git_labels_meta %s', json.dumps(git_labels_meta, indent=4))
         return latest_images, git_labels_meta
 
 

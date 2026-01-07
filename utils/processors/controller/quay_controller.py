@@ -2,11 +2,15 @@ import os
 import requests
 import json
 import sys
+from logger.logger import getLogger
 
+LOGGER = getLogger('processor')
 BASE_URL = 'https://quay.io/api/v1'
+
 class quay_controller:
     def __init__(self, org:str):
         self.org = org
+
     def get_tag_details(self, repo, tag):
         result_tag = {}
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=true'
@@ -17,6 +21,7 @@ class quay_controller:
         if tags:
             result_tag = tags[0]
         return result_tag
+
     def get_all_tags(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=false'
         headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
@@ -26,13 +31,13 @@ class quay_controller:
             tag = response.json()['tags']
             return tag
         else:
-            print(response.json())
+            LOGGER.error(f'Failed to get tags: {response.json()}')
             sys.exit(1)
 
     def get_supported_archs(self, repo, manifest_digest):
         manifest_json = self.get_manifest_details(repo, manifest_digest)
         supported_archs = []
-        if manifest_json['is_manifest_list'] == True:
+        if manifest_json['is_manifest_list']:
             manifest_data = manifest_json['manifest_data']
             manifest_data = json.loads(manifest_data)
             for manifest in manifest_data['manifests']:
@@ -42,12 +47,13 @@ class quay_controller:
     def get_image_manifest_digests_for_all_the_supported_archs(self, repo, manifest_digest):
         manifest_json = self.get_manifest_details(repo, manifest_digest)
         image_manifest_digests = []
-        if manifest_json['is_manifest_list'] == True:
+        if manifest_json['is_manifest_list']:
             manifest_data = manifest_json['manifest_data']
             manifest_data = json.loads(manifest_data)
             for manifest in manifest_data['manifests']:
                 image_manifest_digests.append(manifest['digest'])
         return image_manifest_digests
+
     def get_manifest_details(self, repo, manifest_digest):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{manifest_digest}'
         headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
@@ -57,9 +63,8 @@ class quay_controller:
         if 'manifest_data' in response.json():
             return response.json()
         else:
-            print(response.json())
+            LOGGER.error(f'Failed to get manifest details: {response.json()}')
             sys.exit(1)
-
 
     def get_git_labels(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{tag}/labels'
@@ -71,5 +76,5 @@ class quay_controller:
             labels = response.json()['labels']
             return labels
         else:
-            print(response.json())
+            LOGGER.error(f'Failed to get git labels: {response.json()}')
             sys.exit(1)
