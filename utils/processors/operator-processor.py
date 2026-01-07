@@ -1,273 +1,216 @@
 import sys
-from datetime import datetime
-from pathlib import Path
-from ruamel.yaml.comments import CommentedMap
-from jsonupdate_ng import jsonupdate_ng
-import requests
-import argparse
-import yaml
-import ruamel.yaml as ruyaml
-import os
-from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-
 import json
+from jsonupdate_ng import jsonupdate_ng
+import argparse
+from logger.logger import getLogger
+import utils.util as util
+import constants.constants as CONSTANTS
+
+LOGGER = getLogger('processor')
+
 class operator_processor:
-    PRODUCTION_REGISTRY = 'registry.redhat.io'
-    OPERATOR_NAME = 'rhods-operator'
-    GIT_URL_LABEL_KEY = 'git.url'
-    GIT_COMMIT_LABEL_KEY = 'git.commit'
 
     def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Initializing Operator Processor")
+        LOGGER.info("=============================================================================")
         self.patch_yaml_path = patch_yaml_path
         self.operands_map_path = operands_map_path
         self.nudging_yaml_path = nudging_yaml_path
         self.manifest_config_path = manifest_config_path
         self.rhoai_version = rhoai_version
-
-        self.patch_dict = self.parse_patch_yaml()
-
-        #uncomment this if we face id001 problem in the operands map yaml
-        ruyaml.representer.RoundTripRepresenter.ignore_aliases = lambda x, y: True
-
-        self.operands_map_dict = ruyaml.load(open(self.operands_map_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        self.nudging_yaml_dict = ruyaml.load(open(self.nudging_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        self.manifest_config_dict = ruyaml.load(open(self.manifest_config_path), Loader=ruyaml.RoundTripLoader,
-                                             preserve_quotes=True)
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
-        self.push_pipeline_dict = ruyaml.load(open(self.push_pipeline_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
+        LOGGER.info(f"rhoai_version: {self.rhoai_version}")
+        LOGGER.info(f"push_pipeline_operation: {self.push_pipeline_operation}")
+        LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
+        LOGGER.info(f"operands_map_path: {self.operands_map_path}")
+        LOGGER.info(f"nudging_yaml_path: {self.nudging_yaml_path}")
+        LOGGER.info(f"manifest_config_path: {self.manifest_config_path}")
+        LOGGER.info(f"push_pipeline_yaml_path: {self.push_pipeline_yaml_path}")
 
-    def parse_patch_yaml(self):
-        return yaml.safe_load(open(self.patch_yaml_path))
-    def generate_latest_operands_map(self):
+        LOGGER.info("")
+        LOGGER.info("Loading yaml files...")
+        self.patch_dict = util.load_yaml_file(self.patch_yaml_path, parser='pyyaml')
+        self.operands_map_dict = util.load_yaml_file(self.operands_map_path)
+        self.nudging_yaml_dict = util.load_yaml_file(self.nudging_yaml_path)
+        self.manifest_config_dict = util.load_yaml_file(self.manifest_config_path)
+        self.push_pipeline_dict = util.load_yaml_file(self.push_pipeline_yaml_path)
+
+        # Log debug info for loaded dictionaries after YAML parsing
+        LOGGER.debug(f'Patch dictionary: {json.dumps(self.patch_dict, indent=4)}')
+        LOGGER.debug(f"operands_map_dict: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
+        LOGGER.debug(f"nudging_yaml_dict: {json.dumps(self.nudging_yaml_dict, indent=4, default=str)}")
+        LOGGER.debug(f"manifest_config_dict: {json.dumps(self.manifest_config_dict, indent=4, default=str)}")
+        LOGGER.debug(f"push_pipeline_dict: {json.dumps(self.push_pipeline_dict, indent=4, default=str)}")
+        LOGGER.info("All yaml files loaded successfully!")
+
+    def refresh_operands_map_and_manifest_config(self):
+        """
+        Refreshes operands_map and manifest_config with the latest image digests and git metadata.
+        """
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Syncing relatedImages list from Bundle Patch...")
+        LOGGER.info("=============================================================================")
         self.sync_yamls_from_bundle_patch()
 
-        self.latest_images, self.git_labels_meta = [], {}
-        self.latest_images, self.git_labels_meta = self.get_all_latest_images_using_operands_map()
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Filtering out FBC, BUNDLE, and ODH_OPERATOR images...")
+        LOGGER.info("=============================================================================")
+        # FBC, BUNDLE, and ODH_OPERATOR images are built after this script is executed
+        # Also, we don't need to include the metadata for these images in the manifest config
+        filtered_entries = util.filter_image_entries(
+            image_entries=list(self.operands_map_dict['relatedImages']),
+            exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']
+        )
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Querying Quay.io for latest image digest and git metadata...")
+        LOGGER.info("=============================================================================")
+        self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(filtered_entries, self.rhoai_version)
 
         if self.latest_images:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Updating operands-map.yaml with latest image digests...")
+            LOGGER.info("=============================================================================")
             self.update_operands_map()
+
         if self.git_labels_meta:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Updating manifest-config.yaml with git metadata...")
+            LOGGER.info("=============================================================================")
             self.update_manifest_config()
 
-        self.process_push_pipeline()
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Processing push pipeline...")
+        LOGGER.info("=============================================================================")
+        self.is_push_pipeline_updated, self.push_pipeline_dict = util.process_push_pipeline(self.push_pipeline_dict, self.push_pipeline_operation)
 
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Writing output files...")
+        LOGGER.info("=============================================================================")
         self.write_output_files()
 
 
-    def process_push_pipeline(self):
-        current_on_cel_expr = self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression']
-        disable_ext = 'non-existent-file.non-existent-ext'
-        disable_expr = f'"{disable_ext}".pathChanged() && '
-        updated=False
-        if self.push_pipeline_operation.lower() == 'enable' and disable_ext in current_on_cel_expr:
-            self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression'] = current_on_cel_expr.replace(disable_expr, '')
-            updated = True
-        elif self.push_pipeline_operation.lower() == 'disable' and disable_ext not in current_on_cel_expr:
-            self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression'] = f'{disable_expr}{current_on_cel_expr}'
-            updated = True
-
-        if updated:
-            ruyaml.dump(self.push_pipeline_dict, open(self.push_pipeline_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper,
-                    default_flow_style=False)
     def write_output_files(self):
-        ruyaml.dump(self.nudging_yaml_dict, open(self.nudging_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
-        ruyaml.dump(self.operands_map_dict, open(self.operands_map_path, 'w'), Dumper=ruyaml.RoundTripDumper,
-                    default_flow_style=False)
-        ruyaml.dump(self.manifest_config_dict, open(self.manifest_config_path, 'w'), Dumper=ruyaml.RoundTripDumper,
-                    default_flow_style=False)
+        util.write_yaml_file(self.nudging_yaml_dict, self.nudging_yaml_path)
+        util.write_yaml_file(self.operands_map_dict, self.operands_map_path)
+        util.write_yaml_file(self.manifest_config_dict, self.manifest_config_path)
 
-        # ruyaml.dump(self.nudging_yaml_dict, open('nudging_output.yaml', 'w'), Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
-        # ruyaml.dump(self.operands_map_dict, open('operands_map_output.yaml', 'w'), Dumper=ruyaml.RoundTripDumper,
-        #             default_flow_style=False)
-        # ruyaml.dump(self.manifest_config_dict, open('manifests_config_output.yaml', 'w'), Dumper=ruyaml.RoundTripDumper,
-        #             default_flow_style=False)
+        if self.is_push_pipeline_updated:
+            util.write_yaml_file(self.push_pipeline_dict, self.push_pipeline_yaml_path)
+
+        LOGGER.info("Output files written successfully")
 
     def update_operands_map(self):
+        """
+        Updates operands_map_dict with the latest image digests for all relatedImages.
+        """
+        LOGGER.debug(f"Latest images: {json.dumps(self.latest_images, indent=4, default=str)}")
+        LOGGER.debug(f"Operands map dict: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
         self.operands_map_dict = jsonupdate_ng.updateJson(self.operands_map_dict, {'relatedImages': self.latest_images }, meta={'listPatchScheme': {'$.relatedImages': {'key': 'name'}}} )
 
+        # Deduplicate entries (keep first occurrence) and sort alphabetically
+        # Note: jsonupdate_ng preserves pre-existing duplicates (doesn't remove them).
+        # This deduplication step ensures each component appears only once.
+        LOGGER.info("Deduplicating relatedImages entries by 'name' ...")
+        self.operands_map_dict['relatedImages'] = util.deduplicate_and_sort(
+            self.operands_map_dict['relatedImages'],
+            key='name',
+            sort=True
+        )
+
+        LOGGER.info("Operands Map updated successfully")
+        LOGGER.debug(f"Updated Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
+
     def update_manifest_config(self):
+        """
+        Updates manifest_config_dict with git metadata.
+        Exits if required components or git labels are missing.
+        """
         missing_git_labels = []
+        missing_components = []
+
+        LOGGER.info("Updating git metadata for operator components...")
         for component, manifest_config in self.manifest_config_dict['map'].items():
-            if 'ref_type' not in manifest_config or ('ref_type' in manifest_config and manifest_config['ref_type'] != 'branch'):
-                git_url = self.git_labels_meta['map'][component][self.GIT_URL_LABEL_KEY]
-                git_commit = self.git_labels_meta['map'][component][self.GIT_COMMIT_LABEL_KEY]
-                if git_url and git_commit:
-                    manifest_config[self.GIT_URL_LABEL_KEY] = git_url
-                    manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
-                else:
-                    missing_git_labels.append(component)
+            # Skip branch-based components
+            if manifest_config.get('ref_type') == 'branch':
+                LOGGER.info(f"  Skipping component '{component}' (ref_type=branch)")
+                continue
+
+            # Check if component exists in git_labels_meta
+            if component not in self.git_labels_meta['map']:
+                missing_components.append(component)
+                LOGGER.warning(f"  Component '{component}' not found in git_labels_meta.")
+                continue
+
+            # Get git metadata
+            git_meta = self.git_labels_meta['map'][component]
+            git_url = git_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')
+            git_commit = git_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')
+
+            # Update if both are present
+            if git_url and git_commit:
+                manifest_config[CONSTANTS.GIT_URL_LABEL_KEY] = git_url
+                manifest_config[CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
+                LOGGER.info(f"  Metadata for component '{component}' updated successfully.")
+            else:
+                missing_git_labels.append(component)
+                LOGGER.warning(f"  Component '{component}' is missing git labels.")
+
+        LOGGER.info("Adding git metadata for operator components...")
         self.manifest_config_dict['additional_meta'] = {}
         for component, git_meta in self.git_labels_meta['map'].items():
             if component not in self.manifest_config_dict['map']:
                 self.manifest_config_dict['additional_meta'][component] = git_meta
+                LOGGER.info(f"  Metadata for component '{component}' added successfully.")
+
+        # Error handling
+        if missing_components:
+            LOGGER.error(f'{len(missing_components)} components are missing from the git_labels_meta: {missing_components}')
+            LOGGER.error("Please verify that these components exist in bundle-patch.yaml. If any component has been offboarded and is no longer required, remove its entry from manifests-config.yaml.")
+            sys.exit(1)
+
         if missing_git_labels:
-            print('git.url and git.commit labels missing/empty for : ', missing_git_labels)
+            LOGGER.error(f"git.url and git.commit labels missing/empty for {len(missing_git_labels)} component(s): {missing_git_labels}")
             sys.exit(1)
+
     def sync_yamls_from_bundle_patch(self):
-        # operands map sync
-        existing_components = [component['name'] for component in self.operands_map_dict['relatedImages']]
-        new_components = [component for component in self.patch_dict['patch']['relatedImages'] if component['name'] not in existing_components]
-        new_components = [CommentedMap(component) for component in new_components]
-        self.operands_map_dict['relatedImages'] += new_components
+        """
+        Syncs the relatedImages sections of the operands map and nudging YAML files
+        with the list of relatedImages from the bundle patch YAML. This ensures that
+        newer components are added and offboarded components are automatically removed.
 
-        #nudging yaml sync
-        existing_components = [component['name'] for component in self.nudging_yaml_dict['relatedImages']]
-        new_components = [component for component in self.patch_dict['patch']['relatedImages'] if component['name'] not in existing_components]
-        new_components = [CommentedMap(component) for component in new_components]
-        self.nudging_yaml_dict['relatedImages'] += new_components
+        Steps:
+            - Reads the list of relatedImages from bundle-patch.yaml (self.patch_dict).
+            - Deduplicates entries by component name, keeping the first occurrence.
+            - Sorts components alphabetically by name.
+            - Updates both self.operands_map_dict['relatedImages'] and
+              self.nudging_yaml_dict['relatedImages'] with separate copies of the canonical, sorted list.
+        """
+        # Get latest list of components from patch_dict
+        source_images = self.patch_dict['patch']['relatedImages']
 
-    def patch_related_images(self):
-        SCHEMA = 'relatedImages'
-        PATCH_SCHEMA = 'olm.channels'
-        env_list = self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-                'env']
-        env_list = [dict(item) for item in env_list]
-        env_object = jsonupdate_ng.updateJson({'env': env_list}, {'env': self.latest_images}, meta={'listPatchScheme': {'$.env': {'key': 'name', 'keyType': 'partial', 'keySeparator': '@'}}})
-        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-            'env'] = env_object['env']
-        relatedImages = []
-        for name, value in self.csv_dict['metadata']['annotations'].items():
-            if value.startswith(self.PRODUCTION_REGISTRY) and '@sha256:' in value:
-                relatedImages.append({'name': f'{value.split("/")[-1].replace("@sha256:", "-")}-annotation', 'image': value})
-        relatedImages += [{'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']} for image in self.latest_images]
-        self.csv_dict['spec']['relatedImages'] = relatedImages
+        # Deduplicate (keep first occurrence) and sort alphabetically
+        deduplicated_images = util.deduplicate_and_sort(source_images, key='name', sort=True)
 
+        # Overwrite operands map with its own copy
+        self.operands_map_dict['relatedImages'] = [dict(entry) for entry in deduplicated_images]
+        LOGGER.info("Operands Map synced successfully")
+        LOGGER.debug(f"Synced Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
 
-    def get_all_latest_images_using_operands_map(self):
-        latest_images = []
-        git_labels_meta = {'map': {}}
-        missing_images = []
-        for image_entry in [image for image in self.operands_map_dict['relatedImages']  if 'FBC' not in image['name'] and 'BUNDLE' not in image['name'] and 'ODH_OPERATOR' not in image['name'] ]:
-            print(f'Processing image entry - {image_entry}')
-            parts = image_entry['value'].split('@')[0].split('/')
-            registry = parts[0]
-            org = parts[1]
-            qc = quay_controller(org)
-            repo = '/'.join(parts[2:])
-            tags = qc.get_all_tags(repo, self.rhoai_version)
-            component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
-
-            if not tags:
-                print(f'no tags found for {repo}')
-                missing_images.append(repo)
-            for tag in tags:
-                sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
-                signature = qc.get_tag_details(repo, sig_tag)
-                if signature:
-                    value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
-                    # if image_entry['value'] != value:
-                    image_entry['value'] = DoubleQuotedScalarString(value)
-                    latest_images.append(image_entry)
-
-                    manifest_digest = tag["manifest_digest"]
-                    print(f'manifest_digest = {manifest_digest}')
-                    if tag['is_manifest_list'] == True:
-                        print('Found to be a multi-arch image..')
-                        image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
-                        if image_manifest_digests:
-                            manifest_digest = image_manifest_digests[0]
-                            print(f'will be using the image with manifest_digest {manifest_digest} to find the tags and lables')
-
-
-                    labels = qc.get_git_labels(repo, manifest_digest)
-                    labels = {label['key']:label['value'] for label in labels if label['value']}
-                    git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
-                    git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
-                    git_labels_meta['map'][component_name] = {}
-                    git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
-                    git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
-
-                    break
-        if missing_images:
-            print('Images missing for following components : ', missing_images)
-            sys.exit(1)
-        print('latest_images', json.dumps(latest_images, indent=4))
-        print()
-        print('git_labels_meta', json.dumps(git_labels_meta, indent=4))
-        return latest_images, git_labels_meta
-
-
-
-def str_presenter(dumper, data):
-    if data.count('\n') > 0:
-        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
-    # if '"' in data:
-    #     return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='"')
-
-    return dumper.represent_scalar('tag:yaml.org,2002:str', data)
-
-
-BASE_URL = 'https://quay.io/api/v1'
-class quay_controller:
-    def __init__(self, org:str):
-        self.org = org
-    def get_tag_details(self, repo, tag):
-        result_tag = {}
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=true'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        tags = response.json()['tags']
-        if tags:
-            result_tag = tags[0]
-        return result_tag
-    def get_all_tags(self, repo, tag):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=false'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        if 'tags' in response.json():
-            tag = response.json()['tags']
-            return tag
-        else:
-            print(response.json())
-            sys.exit(1)
-
-    def get_supported_archs(self, repo, manifest_digest):
-        manifest_json = self.get_manifest_details(repo, manifest_digest)
-        supported_archs = []
-        if manifest_json['is_manifest_list'] == True:
-            manifest_data = manifest_json['manifest_data']
-            manifest_data = json.loads(manifest_data)
-            for manifest in manifest_data['manifests']:
-                supported_archs.append(f'{manifest["platform"]["os"]}-{manifest["platform"]["architecture"]}')
-        return supported_archs
-
-    def get_image_manifest_digests_for_all_the_supported_archs(self, repo, manifest_digest):
-        manifest_json = self.get_manifest_details(repo, manifest_digest)
-        image_manifest_digests = []
-        if manifest_json['is_manifest_list'] == True:
-            manifest_data = manifest_json['manifest_data']
-            manifest_data = json.loads(manifest_data)
-            for manifest in manifest_data['manifests']:
-                image_manifest_digests.append(manifest['digest'])
-        return image_manifest_digests
-    def get_manifest_details(self, repo, manifest_digest):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{manifest_digest}'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-
-        if 'manifest_data' in response.json():
-            return response.json()
-        else:
-            print(response.json())
-            sys.exit(1)
-
-
-    def get_git_labels(self, repo, tag):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{tag}/labels'
-        # ?filter=git, throwing 403 forbidden, due to this need to check, seems quay issue, disabling the fitler for now
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        if 'labels' in response.json():
-            labels = response.json()['labels']
-            return labels
-        else:
-            print(response.json())
-            sys.exit(1)
+        # Overwrite nudging yaml with its own separate copy
+        self.nudging_yaml_dict['relatedImages'] = [dict(entry) for entry in deduplicated_images]
+        LOGGER.info("Nudging YAML synced successfully")
+        LOGGER.debug(f"Synced Nudging YAML: {json.dumps(self.nudging_yaml_dict, indent=4, default=str)}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -291,7 +234,7 @@ if __name__ == '__main__':
 
     if args.operation.lower() == 'process-operator-yamls':
         processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path)
-        processor.generate_latest_operands_map()
+        processor.refresh_operands_map_and_manifest_config()
 
     # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
     # operands_map_path = '/home/dchouras/RHODS/DevOps/rhods-operator/build/operands-map.yaml'
@@ -306,6 +249,4 @@ if __name__ == '__main__':
     #                                operands_map_path=operands_map_path, nudging_yaml_path=nudging_yaml_path,
     #                                manifest_config_path=manifest_config_path,
     #                              push_pipeline_yaml_path=push_pipeline_yaml_path, push_pipeline_operation=push_pipeline_operation)
-    # processor.generate_latest_operands_map()
-
-
+    # processor.refresh_operands_map_and_manifest_config
