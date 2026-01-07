@@ -7,7 +7,7 @@ class ColoredFormatter(logging.Formatter):
     Custom log formatter that inherits from `logging.Formatter` to add ANSI escape codes
     for colorizing log messages based on their severity level.
     """
-    
+
     # Dictionary to define colors for different log levels
     COLORS = {
         logging.DEBUG: "\033[95m",      # Magenta
