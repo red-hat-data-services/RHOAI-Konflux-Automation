@@ -1,4 +1,0 @@
-jira==3.0.1
-requests
-python-dotenv
-pyyaml
