@@ -5,6 +5,7 @@ import argparse
 import yaml
 import ruamel.yaml as ruyaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+import constants.constants as CONSTANTS
 from controller.quay_controller import quay_controller
 from logger.logger import getLogger
 import json
@@ -12,10 +13,6 @@ import json
 logger = getLogger("processor")
 
 class operator_processor:
-    PRODUCTION_REGISTRY = 'registry.redhat.io'
-    OPERATOR_NAME = 'rhods-operator'
-    GIT_URL_LABEL_KEY = 'git.url'
-    GIT_COMMIT_LABEL_KEY = 'git.commit'
 
     def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
         self.patch_yaml_path = patch_yaml_path
@@ -90,11 +87,11 @@ class operator_processor:
         missing_git_labels = []
         for component, manifest_config in self.manifest_config_dict['map'].items():
             if 'ref_type' not in manifest_config or ('ref_type' in manifest_config and manifest_config['ref_type'] != 'branch'):
-                git_url = self.git_labels_meta['map'][component][self.GIT_URL_LABEL_KEY]
-                git_commit = self.git_labels_meta['map'][component][self.GIT_COMMIT_LABEL_KEY]
+                git_url = self.git_labels_meta['map'][component][CONSTANTS.GIT_URL_LABEL_KEY]
+                git_commit = self.git_labels_meta['map'][component][CONSTANTS.GIT_COMMIT_LABEL_KEY]
                 if git_url and git_commit:
-                    manifest_config[self.GIT_URL_LABEL_KEY] = git_url
-                    manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
+                    manifest_config[CONSTANTS.GIT_URL_LABEL_KEY] = git_url
+                    manifest_config[CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
                 else:
                     missing_git_labels.append(component)
         self.manifest_config_dict['additional_meta'] = {}
@@ -128,7 +125,7 @@ class operator_processor:
             'env'] = env_object['env']
         relatedImages = []
         for name, value in self.csv_dict['metadata']['annotations'].items():
-            if value.startswith(self.PRODUCTION_REGISTRY) and '@sha256:' in value:
+            if value.startswith(CONSTANTS.PRODUCTION_REGISTRY) and '@sha256:' in value:
                 relatedImages.append({'name': f'{value.split("/")[-1].replace("@sha256:", "-")}-annotation', 'image': value})
         relatedImages += [{'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']} for image in self.latest_images]
         self.csv_dict['spec']['relatedImages'] = relatedImages
@@ -172,11 +169,11 @@ class operator_processor:
 
                     labels = qc.get_git_labels(repo, manifest_digest)
                     labels = {label['key']:label['value'] for label in labels if label['value']}
-                    git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
-                    git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
+                    git_url = labels[CONSTANTS.GIT_URL_LABEL_KEY] if CONSTANTS.GIT_URL_LABEL_KEY in labels else ''
+                    git_commit = labels[CONSTANTS.GIT_COMMIT_LABEL_KEY] if CONSTANTS.GIT_COMMIT_LABEL_KEY in labels else ''
                     git_labels_meta['map'][component_name] = {}
-                    git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
-                    git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
+                    git_labels_meta['map'][component_name][CONSTANTS.GIT_URL_LABEL_KEY] = git_url
+                    git_labels_meta['map'][component_name][CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
 
                     break
         if missing_images:
