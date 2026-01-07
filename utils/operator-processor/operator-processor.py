@@ -102,7 +102,7 @@ class operator_processor:
                     manifest_config['git.commit'] = git_commit # temporary change
                 else:
                     missing_git_labels.append(component)
-        self.manifest_config_dict['additional_meta'] = {}
+        # self.manifest_config_dict['additional_meta'] = {} #temporarily disabling it
         for component, git_meta in self.git_labels_meta['map'].items():
             if component not in self.manifest_config_dict['map']:
                 if component in self.manifest_config_dict['additional_meta']:
