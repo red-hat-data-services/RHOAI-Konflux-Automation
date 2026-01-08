@@ -57,9 +57,12 @@ def deduplicate_and_sort(
         LOGGER.info("No duplicate entries found")
 
     if sort:
-        return [seen[k] for k in sorted(seen.keys())]
+        result = [seen[k] for k in sorted(seen.keys())]
     else:
-        return list(seen.values())
+        result = list(seen.values())
+
+    LOGGER.debug(f"resulting list: {json.dumps(result, indent=2, default=str)}")
+    return result
 
 
 def parse_image_value(image_value: str) -> Dict[str, str]:

@@ -118,16 +118,6 @@ class operator_processor:
         LOGGER.debug(f"Operands map dict: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
         self.operands_map_dict = jsonupdate_ng.updateJson(self.operands_map_dict, {'relatedImages': self.latest_images }, meta={'listPatchScheme': {'$.relatedImages': {'key': 'name'}}} )
 
-        # Deduplicate entries (keep first occurrence) and sort alphabetically
-        # Note: jsonupdate_ng preserves pre-existing duplicates (doesn't remove them).
-        # This deduplication step ensures each component appears only once.
-        LOGGER.info("Deduplicating relatedImages entries by 'name' ...")
-        self.operands_map_dict['relatedImages'] = util.deduplicate_and_sort(
-            self.operands_map_dict['relatedImages'],
-            key='name',
-            sort=True
-        )
-
         LOGGER.info("Operands Map updated successfully")
         LOGGER.debug(f"Updated Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
 
@@ -190,11 +180,10 @@ class operator_processor:
         newer components are added and offboarded components are automatically removed.
 
         Steps:
-            - Reads the list of relatedImages from bundle-patch.yaml (self.patch_dict).
-            - Deduplicates entries by component name, keeping the first occurrence.
-            - Sorts components alphabetically by name.
-            - Updates both self.operands_map_dict['relatedImages'] and
-              self.nudging_yaml_dict['relatedImages'] with separate copies of the canonical, sorted list.
+            1. Reads the list of relatedImages from bundle-patch.yaml.
+            2. Deduplicates entries by component name, keeping the first occurrence.
+            3. Sorts components alphabetically by name.
+            4. Syncs operands-map and nudging YAML
         """
         # Get latest list of components from patch_dict
         source_images = self.patch_dict['patch']['relatedImages']
@@ -202,13 +191,33 @@ class operator_processor:
         # Deduplicate (keep first occurrence) and sort alphabetically
         deduplicated_images = util.deduplicate_and_sort(source_images, key='name', sort=True)
 
-        # Overwrite operands map with its own copy
-        self.operands_map_dict['relatedImages'] = [dict(entry) for entry in deduplicated_images]
+        # Sync operands-map: The relatedImages list is completely replaced with the deduplicated,
+        # sorted list from bundle-patch. uses list() to create a copy and avoid shared reference
+        self.operands_map_dict['relatedImages'] = list(deduplicated_images)
         LOGGER.info("Operands Map synced successfully")
         LOGGER.debug(f"Synced Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
 
-        # Overwrite nudging yaml with its own separate copy
-        self.nudging_yaml_dict['relatedImages'] = [dict(entry) for entry in deduplicated_images]
+        # Sync nudging YAML: The relatedImages list is merged with bundle-patch entries.
+        # Components are matched by 'name' field:
+        # - If component exists in both files: 'value' is preserved from nudging YAML
+        # - If component exists only in bundle-patch: added with bundle-patch values
+        # - If component exists only in nudging YAML: removed (no longer needed)
+
+        # Capture component names from bundle-patch BEFORE merge
+        # (jsonupdate_ng modifies deduplicated_images in place, adding entries from nudging YAML)
+        bundle_patch_component_names = {entry['name'] for entry in deduplicated_images}
+
+        merged_nudging = jsonupdate_ng.updateJson(
+            {'relatedImages': deduplicated_images},
+            self.nudging_yaml_dict,
+            meta={'listPatchScheme': {'$.relatedImages': {'key': 'name'}}}
+        )
+
+        # Filter to only keep components that exist in bundle-patch
+        self.nudging_yaml_dict['relatedImages'] = [
+            entry for entry in merged_nudging['relatedImages']
+            if entry['name'] in bundle_patch_component_names
+        ]
         LOGGER.info("Nudging YAML synced successfully")
         LOGGER.debug(f"Synced Nudging YAML: {json.dumps(self.nudging_yaml_dict, indent=4, default=str)}")
 
