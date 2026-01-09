@@ -14,7 +14,7 @@ from git import Repo
 
 import json
 class bundle_processor:
-    PRODUCTION_REGISTRY = 'registry.redhat.io'
+    PRODUCTION_REGISTRY = 'quay.io'
     OPERATOR_NAME = 'rhods-operator'
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
