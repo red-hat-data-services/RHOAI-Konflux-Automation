@@ -212,7 +212,7 @@ class snapshot_processor:
         labels = {label['key']: label['value'] for label in labels if label['value']}
         for key, value in labels.items():
             if key in [self.GIT_COMMIT_LABEL_KEY, self.GIT_URL_LABEL_KEY]:
-                component:str = "odh-operator-bundle"
+                component:str = "opendatahub-operator-bundle"
                 self.git_meta += f'{component.replace("-", "_").upper()}_{key.replace(".", "_").upper()}={value}\n'
             elif key.endswith(self.GIT_URL_LABEL_KEY) or key.endswith(self.GIT_COMMIT_LABEL_KEY):
                 self.git_meta += f'{key.replace("-", "_").replace(".", "_").upper()}={value}\n'
