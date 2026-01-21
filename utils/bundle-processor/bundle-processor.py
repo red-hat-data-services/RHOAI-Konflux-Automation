@@ -72,7 +72,7 @@ class bundle_processor:
                 'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
 
             self.ODH_OPERATOR_IMAGE_SHA = ODH_OPERATOR_IMAGE[0].split(":")[1]
-            self.OPENDATAHUB_OPERATOR_IMAGE = ODH_OPERATOR_IMAGE
+            self.OPENDATAHUB_OPERATOR_IMAGE = ODH_OPERATOR_IMAGE[0]
 
         self.latest_images = self.get_latest_images_from_operands_map()
         self.apply_replacements_to_related_images()
