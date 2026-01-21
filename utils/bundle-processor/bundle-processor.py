@@ -103,6 +103,10 @@ class bundle_processor:
         git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
+
+        # add the image as a build arg (and by extension, a bundle build label) in order to make tracer be able to query odh-build-metadata easily
+        self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}"
+
         
         dest = f'{currentDir}/odh-build-metadata'
         repo = Repo.init(dest)
@@ -140,9 +144,6 @@ class bundle_processor:
 
     def generate_bundle_build_args(self):
        
-        # add the image as a build arg (and by extension, a bundle build label) in order to make tracer be able to query odh-build-metadata easily
-        self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}"
-
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
