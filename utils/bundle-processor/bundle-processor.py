@@ -72,6 +72,7 @@ class bundle_processor:
                 'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
 
             self.ODH_OPERATOR_IMAGE_SHA = ODH_OPERATOR_IMAGE[0].split(":")[1]
+            self.ODH_OPERATOR_IMAGE = ODH_OPERATOR_IMAGE
 
         self.latest_images = self.get_latest_images_from_operands_map()
         self.apply_replacements_to_related_images()
@@ -91,7 +92,7 @@ class bundle_processor:
         self.write_output_files()
 
     def get_latest_images_from_operands_map(self):
-        #execute shell script to checkout the rhods-operator repo with the given git.commit
+        # checkout the odh-build-metadata to get all component git commits
         currentDir = Path(os.path.abspath(__file__)).parent
 
         operator_name = "opendatahub-operator"
@@ -138,26 +139,9 @@ class bundle_processor:
 
 
     def generate_bundle_build_args(self):
-        currentDir = Path(os.path.abspath(__file__)).parent
-        self.manifest_config_path = f'{currentDir}/odh-build-metadata/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}/manifests-config.yaml'
-        self.manifest_config_dict = yaml.safe_load(open(self.manifest_config_path))
-        
-
-        for component, git_meta in {**self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
-            if 'ref_type' in git_meta:
-                continue
-
-            if self.GIT_URL_LABEL_KEY in git_meta:
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
-            else:
-                print(f"WARNING: git.url label not found for manifests-config entry of {component}.\n  {git_meta}")
-
-            if self.GIT_COMMIT_LABEL_KEY in git_meta:
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
-            else:
-                print(f"WARNING: git.commit label not found for manifests-config entry of {component}. Trying vcs-ref instead.\n  {git_meta}")
-                workaround = 'vcs-ref'
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[workaround]}\n'
+       
+        # add the image as a build arg (and by extension, a bundle build label) in order to make tracer be able to query odh-build-metadata easily
+        self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}"
 
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
