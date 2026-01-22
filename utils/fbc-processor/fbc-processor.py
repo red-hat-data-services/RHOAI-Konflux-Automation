@@ -215,7 +215,7 @@ class snapshot_processor:
                 component:str = "opendatahub-operator-bundle"
                 self.git_meta += f'{component.replace("-", "_").upper()}_{key.replace(".", "_").upper()}={value}\n'
             elif key == "opendatahub-operator.image":
-                self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={value}"
+                self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={value}\n"
 
         with open(self.catalog_build_args_file_path, "w") as f:
             f.write(self.git_meta)
