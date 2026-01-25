@@ -4,21 +4,21 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 from jsonupdate_ng import jsonupdate_ng
-import requests
 import argparse
 import yaml
 import ruamel.yaml as ruyaml
 import os
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-
 import json
+
+from logger.logger import getLogger
+from controller.quay_controller import quay_controller
+import constants.constants as CONSTANTS
+
+LOGGER = getLogger('processor')
+
+
 class bundle_processor:
-    PRODUCTION_REGISTRY = 'registry.redhat.io'
-    OPERATOR_NAME = 'rhods-operator'
-    GIT_URL_LABEL_KEY = 'git.url'
-    GIT_COMMIT_LABEL_KEY = 'git.commit'
-    GITHUB_URL_LABEL_KEY = 'github.url'
-    GITHUB_COMMIT_LABEL_KEY = 'github.commit'
 
     def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
         self.build_config_path = build_config_path
@@ -86,12 +86,12 @@ class bundle_processor:
         elif "odh-rhel8-operator" in self.git_labels_meta["map"]:
             operator_name = "odh-rhel8-operator"
 
-        git_url = self.git_labels_meta["map"][operator_name][self.GIT_URL_LABEL_KEY]
-        git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
-        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
-        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
-        #self.git_meta += f'{operator_name}.{self.GIT_URL_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
-        #self.git_meta += f'{operator_name}.{self.GIT_COMMIT_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
+        git_url = self.git_labels_meta["map"][operator_name][CONSTANTS.GIT_URL_LABEL_KEY]
+        git_commit = self.git_labels_meta["map"][operator_name][CONSTANTS.GIT_COMMIT_LABEL_KEY]
+        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
+        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
+        #self.git_meta += f'{operator_name}.{CONSTANTS.GIT_URL_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
+        #self.git_meta += f'{operator_name}.{CONSTANTS.GIT_COMMIT_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
         # odh-dashboard.git.commit="${CI_ODH_DASHBOARD_UPSTREAM_COMMIT}" \
         dest = f'{currentDir}/rhods-operator'
         self.executeShellScript(f'{shellScriptPath} "{git_url}" {git_commit} {self.rhoai_version} {dest}')
@@ -126,10 +126,10 @@ class bundle_processor:
 
         for component, git_meta in {**self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
             if 'ref_type' not in git_meta:
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_URL_LABEL_KEY]}\n'
-                self.git_meta += f'{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[self.GIT_COMMIT_LABEL_KEY]}\n'
-                # self.git_meta += f'{component}.{self.GIT_URL_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
-                # self.git_meta += f'{component}.{self.GIT_COMMIT_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
+                self.git_meta += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_URL_LABEL_KEY]}\n'
+                self.git_meta += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_COMMIT_LABEL_KEY]}\n'
+                # self.git_meta += f'{component}.{CONSTANTS.GIT_URL_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
+                # self.git_meta += f'{component}.{CONSTANTS.GIT_COMMIT_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
@@ -138,7 +138,7 @@ class bundle_processor:
         process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
         process.wait()
         returnCode = process.returncode
-        print(f'Shell script completed this exit code {returnCode}')
+        LOGGER.info(f'Shell script completed this exit code {returnCode}')
         if returnCode > 0:
             sys.exit(returnCode)
         else:
@@ -164,7 +164,7 @@ class bundle_processor:
 
     def patch_additional_csv_fields(self):
         self.csv_dict['metadata']['annotations']['createdAt'] = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        self.csv_dict['metadata']['name'] = f'{self.OPERATOR_NAME}.{self.patch_dict["patch"]["version"]}'
+        self.csv_dict['metadata']['name'] = f'{CONSTANTS.OPERATOR_NAME}.{self.patch_dict["patch"]["version"]}'
         self.csv_dict['spec']['version'] = DoubleQuotedScalarString(self.patch_dict["patch"]["version"])
 
 
@@ -215,7 +215,7 @@ class bundle_processor:
             # Merge additional images patch
             merged_image_list = self.latest_images + additional_images
         else:
-            print("Warning: additional-related-images key not found")
+            LOGGER.warning("additional-related-images key not found")
             merged_image_list = self.latest_images
 
 
@@ -224,7 +224,7 @@ class bundle_processor:
             'env'] = env_object['env']
         relatedImages = []
         for name, value in self.csv_dict['metadata']['annotations'].items():
-            if value.startswith(self.PRODUCTION_REGISTRY) and '@sha256:' in value:
+            if value.startswith(CONSTANTS.PRODUCTION_REGISTRY) and '@sha256:' in value:
                 relatedImages.append({'name': f'{value.split("/")[-1].replace("@sha256:", "-")}-annotation', 'image': value})
         relatedImages += [{'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']} for image in merged_image_list]
         self.csv_dict['spec']['relatedImages'] = relatedImages
@@ -238,7 +238,7 @@ class bundle_processor:
             for replacement in self.build_config['config']['replacements']:
                 intermediate_registry = replacement['registry']
                 for old, new in replacement['repo_mappings'].items():
-                    value = value.replace(f'{intermediate_registry}/{old}@', f'{self.PRODUCTION_REGISTRY}/{new}@')
+                    value = value.replace(f'{intermediate_registry}/{old}@', f'{CONSTANTS.PRODUCTION_REGISTRY}/{new}@')
         return value
     def get_all_latest_images(self):
         latest_images = []
@@ -249,14 +249,14 @@ class bundle_processor:
                 repo = '/'.join(repo_path.split('/')[1:])
                 tags = qc.get_all_tags(repo, self.rhoai_version)
                 if not tags:
-                    print(f'no tags found for {repo}')
+                    LOGGER.warning(f'no tags found for {repo}')
                 for tag in tags:
                     sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
                     signature = qc.get_tag_details(repo, sig_tag)
                     if signature:
                         latest_images.append({'name': f'RELATED_IMAGE_{repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
                         break
-        print('latest_images', json.dumps(latest_images, indent=4))
+        LOGGER.info(f'latest_images: {json.dumps(latest_images, indent=4)}')
         return latest_images
 
     def get_all_latest_images_using_bundle_patch(self):
@@ -275,7 +275,7 @@ class bundle_processor:
             component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
 
             if not tags:
-                print(f'no tags found for {repo}')
+                LOGGER.warning(f'no tags found for {repo}')
                 missing_images.append(repo)
             for tag in tags:
                 sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
@@ -295,35 +295,27 @@ class bundle_processor:
 
                     labels = qc.get_git_labels(repo, manifest_digest)
                     labels = {label['key']:label['value'] for label in labels if label['value']}
-                    git_url = labels[self.GIT_URL_LABEL_KEY]
-                    git_commit = labels[self.GIT_COMMIT_LABEL_KEY]
-                    if self.GITHUB_URL_LABEL_KEY in labels:
-                        git_url = labels[self.GITHUB_URL_LABEL_KEY]
-                        print("overridden the github url")
-                    if self.GITHUB_COMMIT_LABEL_KEY in labels:
-                        git_commit = labels[self.GITHUB_COMMIT_LABEL_KEY]
-                        print("overridden the github commit")
+                    git_url = labels[CONSTANTS.GIT_URL_LABEL_KEY]
+                    git_commit = labels[CONSTANTS.GIT_COMMIT_LABEL_KEY]
+                    if CONSTANTS.GITHUB_URL_LABEL_KEY in labels:
+                        git_url = labels[CONSTANTS.GITHUB_URL_LABEL_KEY]
+                        LOGGER.info("overridden the github url")
+                    if CONSTANTS.GITHUB_COMMIT_LABEL_KEY in labels:
+                        git_commit = labels[CONSTANTS.GITHUB_COMMIT_LABEL_KEY]
+                        LOGGER.info("overridden the github commit")
 
                     git_labels_meta['map'][component_name] = {}
-                    git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
-                    git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
+                    git_labels_meta['map'][component_name][CONSTANTS.GIT_URL_LABEL_KEY] = git_url
+                    git_labels_meta['map'][component_name][CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
 
                     break
         if missing_images:
-            print('Images missing for following components : ', missing_images)
+            LOGGER.error(f'Images missing for following components : {missing_images}')
             sys.exit(1)
-        print('latest_images', json.dumps(latest_images, indent=4))
+        LOGGER.info(f'latest_images: {json.dumps(latest_images, indent=4)}')
         return latest_images, git_labels_meta
 
 
-
-def str_presenter(dumper, data):
-    if data.count('\n') > 0:
-        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
-    # if '"' in data:
-    #     return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='"')
-
-    return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
 class snapshot_processor:
     def __init__(self, snapshot_json_path:str, output_file_path:str, image_filter:str=''):
@@ -340,76 +332,7 @@ class snapshot_processor:
 
         return output_images
 
-BASE_URL = 'https://quay.io/api/v1'
-class quay_controller:
-    def __init__(self, org:str):
-        self.org = org
-    def get_tag_details(self, repo, tag):
-        result_tag = {}
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=true'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        tags = response.json()['tags']
-        if tags:
-            result_tag = tags[0]
-        return result_tag
-    def get_all_tags(self, repo, tag):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=false'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        if 'tags' in response.json():
-            tag = response.json()['tags']
-            return tag
-        else:
-            print(response.json())
-            sys.exit(1)
 
-    def get_supported_archs(self, repo, manifest_digest):
-        manifest_json = self.get_manifest_details(repo, manifest_digest)
-        supported_archs = []
-        if manifest_json['is_manifest_list'] == True:
-            manifest_data = manifest_json['manifest_data']
-            manifest_data = json.loads(manifest_data)
-            for manifest in manifest_data['manifests']:
-                supported_archs.append(f'{manifest["platform"]["os"]}-{manifest["platform"]["architecture"]}')
-        return supported_archs
-
-    def get_image_manifest_digests_for_all_the_supported_archs(self, repo, manifest_digest):
-        manifest_json = self.get_manifest_details(repo, manifest_digest)
-        image_manifest_digests = []
-        if manifest_json['is_manifest_list'] == True:
-            manifest_data = manifest_json['manifest_data']
-            manifest_data = json.loads(manifest_data)
-            for manifest in manifest_data['manifests']:
-                image_manifest_digests.append(manifest['digest'])
-        return image_manifest_digests
-
-    def get_manifest_details(self, repo, manifest_digest):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{manifest_digest}'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-
-        if 'manifest_data' in response.json():
-            return response.json()
-        else:
-            print(response.json())
-            sys.exit(1)
-
-    def get_git_labels(self, repo, tag):
-        url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{tag}/labels'
-        # ?filter=git, throwing 403 forbidden, due to this need to check, seems quay issue, disabling the fitler for now
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
-                   'Accept': 'application/json'}
-        response = requests.get(url, headers=headers)
-        if 'labels' in response.json():
-            labels = response.json()['labels']
-            return labels
-        else:
-            print(response.json())
-            sys.exit(1)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-op', '--operation', required=False,
