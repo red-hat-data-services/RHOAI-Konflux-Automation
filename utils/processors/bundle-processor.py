@@ -13,6 +13,7 @@ import json
 
 from logger.logger import getLogger
 from controller.quay_controller import quay_controller
+import utils.util as util
 import constants.constants as CONSTANTS
 
 LOGGER = getLogger('processor')
@@ -21,32 +22,47 @@ LOGGER = getLogger('processor')
 class bundle_processor:
 
     def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Initializing Bundle Processor")
+        LOGGER.info("=============================================================================")
+
         self.build_config_path = build_config_path
         self.bundle_csv_path = bundle_csv_path
         self.patch_yaml_path = patch_yaml_path
-        # self.snapshot_json_path = snapshot_json_path
         self.output_file_path = output_file_path
-        self.csv_dict = self.parse_csv_yaml()
-        self.patch_dict = self.parse_patch_yaml()
-        self.build_config = yaml.safe_load(open(self.build_config_path))
         self.rhoai_version = rhoai_version
         self.annotation_yaml_path = annotation_yaml_path
-        self.annotation_dict = yaml.safe_load(open(self.annotation_yaml_path))
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
-        self.push_pipeline_dict = ruyaml.load(open(self.push_pipeline_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
+        self.build_type = build_type
         self.build_args_file_path = f'{Path(self.patch_yaml_path).parent}/bundle_build_args.map'
         self.git_meta = ""
-        self.build_type = build_type
 
-    def parse_csv_yaml(self):
-        # csv_dict = yaml.safe_load(open(self.bundle_csv_path))
-        csv_dict = ruyaml.load(open(self.bundle_csv_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        return csv_dict
+        LOGGER.info(f"rhoai_version: {self.rhoai_version}")
+        LOGGER.info(f"build_type: {self.build_type}")
+        LOGGER.info(f"push_pipeline_operation: {self.push_pipeline_operation}")
+        LOGGER.info(f"build_config_path: {self.build_config_path}")
+        LOGGER.info(f"bundle_csv_path: {self.bundle_csv_path}")
+        LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
+        LOGGER.info(f"annotation_yaml_path: {self.annotation_yaml_path}")
+        LOGGER.info(f"push_pipeline_yaml_path: {self.push_pipeline_yaml_path}")
+        LOGGER.info(f"output_file_path: {self.output_file_path}")
+        LOGGER.info(f"build_args_file_path: {self.build_args_file_path}")
 
+        LOGGER.info("")
+        LOGGER.info("Loading yaml files...")
+        self.csv_dict = util.load_yaml_file(self.bundle_csv_path)
+        self.patch_dict = util.load_yaml_file(self.patch_yaml_path, parser='pyyaml')
+        self.build_config_dict = util.load_yaml_file(self.build_config_path, parser='pyyaml')
+        self.annotation_dict = util.load_yaml_file(self.annotation_yaml_path, parser='pyyaml')
+        self.push_pipeline_dict = util.load_yaml_file(self.push_pipeline_yaml_path)
 
-    def parse_patch_yaml(self):
-        return yaml.safe_load(open(self.patch_yaml_path))
+        LOGGER.debug(f"csv_dict: {json.dumps(self.csv_dict, indent=4, default=str)}")
+        LOGGER.debug(f"patch_dict: {json.dumps(self.patch_dict, indent=4, default=str)}")
+        LOGGER.debug(f"build_config_dict: {json.dumps(self.build_config_dict, indent=4, default=str)}")
+        LOGGER.debug(f"annotation_dict: {json.dumps(self.annotation_dict, indent=4, default=str)}")
+        LOGGER.debug(f"push_pipeline_dict: {json.dumps(self.push_pipeline_dict, indent=4, default=str)}")
+        LOGGER.info("All yaml files loaded successfully!")
     def patch_bundle_csv(self):
         self.latest_images, self.git_labels_meta = [], {}
 
@@ -235,7 +251,7 @@ class bundle_processor:
 
     def apply_replacement(self, value:str):
         if value:
-            for replacement in self.build_config['config']['replacements']:
+            for replacement in self.build_config_dict['config']['replacements']:
                 intermediate_registry = replacement['registry']
                 for old, new in replacement['repo_mappings'].items():
                     value = value.replace(f'{intermediate_registry}/{old}@', f'{CONSTANTS.PRODUCTION_REGISTRY}/{new}@')
@@ -243,7 +259,7 @@ class bundle_processor:
     def get_all_latest_images(self):
         latest_images = []
         qc = quay_controller('rhoai')
-        for registry_entry in self.build_config['config']['replacements']:
+        for registry_entry in self.build_config_dict['config']['replacements']:
             registry = registry_entry['registry']
             for repo_path in registry_entry['repo_mappings']:
                 repo = '/'.join(repo_path.split('/')[1:])
