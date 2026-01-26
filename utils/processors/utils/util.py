@@ -19,6 +19,22 @@ ruyaml.representer.RoundTripRepresenter.ignore_aliases = lambda self, data: True
 LOGGER = getLogger('processor')
 
 
+def to_plain_dict(obj):
+    """
+    Convert ruamel.yaml CommentedMap/CommentedSeq to regular Python dict/list.
+
+    This is necessary because jsonupdate_ng doesn't work correctly with ruamel.yaml's
+    special data types, causing entries to be lost during merges.
+
+    Args:
+        obj: A ruamel.yaml object (CommentedMap, CommentedSeq) or regular Python object
+
+    Returns:
+        Regular Python dict/list with the same data
+    """
+    return json.loads(json.dumps(obj, default=str))
+
+
 def deduplicate_and_sort(
     entries: List[Dict],
     key: str = 'name',

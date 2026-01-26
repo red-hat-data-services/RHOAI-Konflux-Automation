@@ -1,5 +1,6 @@
 import sys
 import json
+import copy
 from jsonupdate_ng import jsonupdate_ng
 import argparse
 from logger.logger import getLogger
@@ -57,20 +58,11 @@ class operator_processor:
 
         LOGGER.info("")
         LOGGER.info("=============================================================================")
-        LOGGER.info("Filtering out FBC, BUNDLE, and ODH_OPERATOR images...")
-        LOGGER.info("=============================================================================")
-        # FBC, BUNDLE, and ODH_OPERATOR images are built after this script is executed
-        # Also, we don't need to include the metadata for these images in the manifest config
-        filtered_entries = util.filter_image_entries(
-            image_entries=list(self.operands_map_dict['relatedImages']),
-            exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']
-        )
-
-        LOGGER.info("")
-        LOGGER.info("=============================================================================")
         LOGGER.info("Querying Quay.io for latest image digest and git metadata...")
         LOGGER.info("=============================================================================")
-        self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(filtered_entries, self.rhoai_version)
+        self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(
+            self.operands_map_dict['relatedImages'], self.rhoai_version
+        )
 
         if self.latest_images:
             LOGGER.info("")
@@ -181,8 +173,8 @@ class operator_processor:
 
         Steps:
             1. Reads the list of relatedImages from bundle-patch.yaml.
-            2. Deduplicates entries by component name, keeping the first occurrence.
-            3. Sorts components alphabetically by name.
+            2. Sorts and Deduplicates entries by component name, keeping the first occurrence.
+            3. Filters out FBC, BUNDLE, and ODH_OPERATOR images
             4. Syncs operands-map and nudging YAML
         """
         # Get latest list of components from patch_dict
@@ -191,25 +183,32 @@ class operator_processor:
         # Deduplicate (keep first occurrence) and sort alphabetically
         deduplicated_images = util.deduplicate_and_sort(source_images, key='name', sort=True)
 
-        # Sync operands-map: The relatedImages list is completely replaced with the deduplicated,
-        # sorted list from bundle-patch. uses list() to create a copy and avoid shared reference
-        self.operands_map_dict['relatedImages'] = list(deduplicated_images)
+        # Filter out FBC, BUNDLE, and ODH_OPERATOR images
+        filtered_images = util.filter_image_entries(
+            image_entries=deduplicated_images,
+            exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']
+        )
+
+        # Sync operands-map: The relatedImages list is completely replaced with the filtered_images
+        # Uses deepcopy to avoid shared references
+        self.operands_map_dict['relatedImages'] = copy.deepcopy(filtered_images)
         LOGGER.info("Operands Map synced successfully")
         LOGGER.debug(f"Synced Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
 
-        # Sync nudging YAML: The relatedImages list is merged with bundle-patch entries.
+        # Sync nudging YAML: The relatedImages list is merged with deduplicated, sorted and filtered bundle-patch entries(filtered_images).
         # Components are matched by 'name' field:
         # - If component exists in both files: 'value' is preserved from nudging YAML
         # - If component exists only in bundle-patch: added with bundle-patch values
         # - If component exists only in nudging YAML: removed (no longer needed)
 
-        # Capture component names from bundle-patch BEFORE merge
-        # (jsonupdate_ng modifies deduplicated_images in place, adding entries from nudging YAML)
-        bundle_patch_component_names = {entry['name'] for entry in deduplicated_images}
+        # Capture component names from filtered list BEFORE merge
+        bundle_patch_component_names = {entry['name'] for entry in filtered_images}
 
+        # Convert to plain Python dicts before merge (ruamel.yaml CommentedMap/CommentedSeq
+        # causes jsonupdate_ng to lose entries during merge)
         merged_nudging = jsonupdate_ng.updateJson(
-            {'relatedImages': deduplicated_images},
-            self.nudging_yaml_dict,
+            {'relatedImages': util.to_plain_dict(filtered_images)},
+            util.to_plain_dict(self.nudging_yaml_dict),
             meta={'listPatchScheme': {'$.relatedImages': {'key': 'name'}}}
         )
 
