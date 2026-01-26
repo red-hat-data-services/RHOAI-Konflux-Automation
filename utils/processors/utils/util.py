@@ -8,6 +8,7 @@ from typing import List, Dict, Tuple, Optional
 import yaml
 import ruamel.yaml as ruyaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+import requests
 
 from controller.quay_controller import quay_controller
 from logger.logger import getLogger
@@ -397,3 +398,113 @@ def write_yaml_file(data: Dict, file_path: str) -> None:
     LOGGER.info(f"Writing YAML to {file_path}")
     with open(file_path, 'w') as f:
         ruyaml.dump(data, f, Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
+
+
+def fetch_file_data_from_github(
+    git_url: str,
+    git_commit: str,
+    file_path: str,
+    timeout: int = 30
+) -> str:
+    """
+    Fetch a file directly from GitHub using the raw content URL.
+
+    This function converts a GitHub repository URL and commit SHA into a raw content URL
+    and downloads the file content.
+
+    Args:
+        git_url: GitHub repository URL (e.g., 'https://github.com/org/repo' or
+                 'https://github.com/org/repo.git')
+        git_commit: Commit SHA or branch/tag name
+        file_path: Path to the file within the repository (e.g., 'build/operands-map.yaml')
+        timeout: Request timeout in seconds (default: 30)
+
+    Returns:
+        Raw file content as string
+
+    Raises:
+        requests.HTTPError: If the HTTP request fails (e.g., 404 Not Found)
+    """
+    # Normalize git_url: remove trailing .git if present
+    if git_url.endswith('.git'):
+        git_url = git_url[:-4]
+
+    # Convert GitHub URL to raw content URL
+    # https://github.com/org/repo -> https://raw.githubusercontent.com/org/repo
+    raw_base_url = git_url.replace('github.com', 'raw.githubusercontent.com')
+    raw_url = f"{raw_base_url}/{git_commit}/{file_path}"
+
+    LOGGER.info(f"Fetching content from {raw_url}")
+
+    response = requests.get(raw_url, timeout=timeout)
+    response.raise_for_status()
+
+    content = response.text
+    LOGGER.info(f"Successfully fetched {len(content)} bytes")
+
+    return content
+
+
+def apply_registry_and_repo_replacements(
+    image_entries: List[Dict],
+    registry_mapping: Dict[str, str],
+    repo_mappings: Dict[str, str]
+) -> None:
+    """
+    Replaces build registry/repo paths with release registry/repo paths in image entries.
+
+    This function modifies the image entries in-place, replacing registry and repo paths
+    based on the provided mappings.
+
+    Args:
+        image_entries: List of image entry dicts with 'name' and 'value' keys.
+                       Modified in-place.
+        registry_mapping: Dict mapping build registry to release registry
+
+        repo_mappings: Dict mapping build repo paths to release repo paths
+
+    Example:
+        image_entries = [
+            {'name': 'LLAMA_STACK', 'value': 'quay.io/aipcc/llama-stack-core@sha256:abc'},
+            {'name': 'DASHBOARD', 'value': 'quay.io/modh/odh-dashboard@sha256:def'},
+            {'name': 'OPERATOR', 'value': 'quay.io/rhoai/odh-rhel9-operator@sha256:ghi'},
+        ]
+
+        registry_mapping = {
+            'quay.io': 'registry.redhat.io',
+        }
+
+        repo_mappings = {
+            'aipcc/llama-stack-core': 'rhoai/odh-llama-stack-core',
+            'modh/odh-dashboard': 'rhoai/odh-dashboard',
+            'rhoai/odh-rhel9-operator': 'rhoai/odh-rhel9-operator',
+        }
+
+        After apply_registry_and_repo_replacements(image_entries, registry_mapping, repo_mappings):
+
+        image_entries = [
+            {'name': 'LLAMA_STACK', 'value': 'registry.redhat.io/rhoai/odh-llama-stack-core@sha256:abc'},
+            {'name': 'DASHBOARD', 'value': 'registry.redhat.io/rhoai/odh-dashboard@sha256:def'},
+            {'name': 'OPERATOR', 'value': 'registry.redhat.io/rhoai/odh-rhel9-operator@sha256:ghi'},
+        ]
+    """
+    LOGGER.info(f"Applying registry and repo replacements to {len(image_entries)} image(s)")
+
+    # Validate and extract the single registry mapping entry
+    if len(registry_mapping) != 1:
+        raise ValueError(f"registry_mapping must have exactly one entry, got {len(registry_mapping)}")
+    source_registry, target_registry = next(iter(registry_mapping.items()))
+
+    for image_entry in image_entries:
+        original_value = image_entry.get('value', '')
+        new_value = original_value
+
+        if new_value:
+            for source_repo, target_repo in repo_mappings.items():
+                new_value = new_value.replace(
+                    f'{source_registry}/{source_repo}@',
+                    f'{target_registry}/{target_repo}@'
+                )
+
+        image_entry['value'] = new_value
+        LOGGER.debug(f"  {original_value} -> {new_value}")

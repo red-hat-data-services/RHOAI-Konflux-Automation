@@ -2,12 +2,10 @@ import sys
 import re
 from datetime import datetime
 from pathlib import Path
-import subprocess
 from jsonupdate_ng import jsonupdate_ng
 import argparse
 import yaml
 import ruamel.yaml as ruyaml
-import os
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import json
 
@@ -25,18 +23,16 @@ class bundle_processor:
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Bundle Processor")
         LOGGER.info("=============================================================================")
-
+        self.rhoai_version = rhoai_version
+        self.build_type = build_type
+        self.push_pipeline_operation = push_pipeline_operation
         self.build_config_path = build_config_path
         self.bundle_csv_path = bundle_csv_path
         self.patch_yaml_path = patch_yaml_path
         self.output_file_path = output_file_path
-        self.rhoai_version = rhoai_version
         self.annotation_yaml_path = annotation_yaml_path
-        self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
-        self.build_type = build_type
         self.build_args_file_path = f'{Path(self.patch_yaml_path).parent}/bundle_build_args.map'
-        self.git_meta = ""
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -44,9 +40,9 @@ class bundle_processor:
         LOGGER.info(f"build_config_path: {self.build_config_path}")
         LOGGER.info(f"bundle_csv_path: {self.bundle_csv_path}")
         LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
+        LOGGER.info(f"output_file_path: {self.output_file_path}")
         LOGGER.info(f"annotation_yaml_path: {self.annotation_yaml_path}")
         LOGGER.info(f"push_pipeline_yaml_path: {self.push_pipeline_yaml_path}")
-        LOGGER.info(f"output_file_path: {self.output_file_path}")
         LOGGER.info(f"build_args_file_path: {self.build_args_file_path}")
 
         LOGGER.info("")
@@ -63,27 +59,122 @@ class bundle_processor:
         LOGGER.debug(f"annotation_dict: {json.dumps(self.annotation_dict, indent=4, default=str)}")
         LOGGER.debug(f"push_pipeline_dict: {json.dumps(self.push_pipeline_dict, indent=4, default=str)}")
         LOGGER.info("All yaml files loaded successfully!")
-    def patch_bundle_csv(self):
-        self.latest_images, self.git_labels_meta = [], {}
 
-        self.latest_images, self.git_labels_meta = self.get_all_latest_images_using_bundle_patch()
-        self.apply_replacements_to_related_images()
+    def patch_bundle_csv(self): 
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Filtering ODH Operator entry from bundle-patch...")
+        LOGGER.info("=============================================================================")
+        odh_operator_entry = util.filter_image_entries(
+            image_entries=self.patch_dict['patch']['relatedImages'],
+            include_filter=['ODH_OPERATOR']
+        )
+        
+        # Validate exactly one ODH_OPERATOR entry exists.
+        if len(odh_operator_entry) > 1:
+            LOGGER.error(f"Found more than one ODH_OPERATOR entry in relatedImages: {json.dumps(odh_operator_entry, indent=4, default=str)}")
+            sys.exit(1)
+        elif len(odh_operator_entry) == 0:
+            LOGGER.error("No ODH_OPERATOR entry found in relatedImages!")
+            sys.exit(1)
 
-        ODH_OPERATOR_IMAGE = [image['value'] for image in self.latest_images if image['name'] == f'RELATED_IMAGE_ODH_OPERATOR_IMAGE']
-        if ODH_OPERATOR_IMAGE:
-            self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
-            self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-                'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Querying Quay.io for latest ODH Operator image digest and git metadata...")
+        LOGGER.info("=============================================================================")
+         # Compute version tag based on build type
+        version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
+        if self.build_type.lower() == 'nightly':
+            LOGGER.info(f"Build type is nightly, using image tag: {version_tag}")
+        else:
+            LOGGER.info(f"Using image tag: {version_tag}")
 
-        self.latest_images = self.get_latest_images_from_operands_map()
-        self.apply_replacements_to_related_images()
+        # Fetch latest image and git metadata for ODH Operator (with GitHub override for upstream repos)
+        self.operator_image_entry, self.operator_git_metadata = util.fetch_latest_images_and_git_metadata(
+            image_entries=odh_operator_entry,
+            image_tag=version_tag,
+            use_github_override=True
+        )
 
-        self.latest_images = [image for image in self.latest_images if
-                              'FBC' not in image['name'] and 'BUNDLE' not in image['name'] and 'ODH_OPERATOR' not in
-                              image['name']]
+        # Extract operator git metadata. We already validate above that odh_operator_entry
+        # has exactly one entry, and operator_git_metadata is derived from it via
+        # fetch_latest_images_and_git_metadata(), so we can safely access [0] here.
+        self.operator_name = list(self.operator_git_metadata["map"].keys())[0]
+        self.operator_git_url = self.operator_git_metadata["map"][self.operator_name][CONSTANTS.GIT_URL_LABEL_KEY]
+        self.operator_git_commit = self.operator_git_metadata["map"][self.operator_name][CONSTANTS.GIT_COMMIT_LABEL_KEY]
+        LOGGER.info("Operator metadata:")
+        LOGGER.info(f"  Operator name: {self.operator_name}")
+        LOGGER.info(f"  Operator git URL: {self.operator_git_url}")
+        LOGGER.info(f"  Operator git commit: {self.operator_git_commit}")
+        
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Fetching operands-map.yaml and manifests-config.yaml from operator repo...")
+        LOGGER.info("=============================================================================")
+        LOGGER.info(f"Operator repo: {self.operator_git_url}")
+        LOGGER.info(f"Commit: {self.operator_git_commit}")
+        LOGGER.info(f"Operands map path: {CONSTANTS.OPERANDS_MAP_PATH}")
+        LOGGER.info(f"Manifests config path: {CONSTANTS.MANIFESTS_CONFIG_PATH}")
+
+        # Fetch and load operands-map.yaml
+        operands_map_content = util.fetch_file_data_from_github(
+            git_url=self.operator_git_url,
+            git_commit=self.operator_git_commit,
+            file_path=CONSTANTS.OPERANDS_MAP_PATH
+        )
+        self.operands_map_dict = yaml.safe_load(operands_map_content)
+        LOGGER.debug(f"operands_map_dict: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
+
+        # Fetch and load manifests-config.yaml
+        manifest_config_content = util.fetch_file_data_from_github(
+            git_url=self.operator_git_url,
+            git_commit=self.operator_git_commit,
+            file_path=CONSTANTS.MANIFESTS_CONFIG_PATH
+        )
+        self.manifest_config_dict = yaml.safe_load(manifest_config_content)
+        LOGGER.debug(f"manifest_config_dict: {json.dumps(self.manifest_config_dict, indent=4, default=str)}")
+        LOGGER.info("Operands map and manifests config loaded successfully!")
+        
+        
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Generating operand image entries and bundle build args...")
+        LOGGER.info("=============================================================================")
+        self.operand_image_entries = self.operands_map_dict['relatedImages']
+        self.bundle_build_args = self.generate_bundle_build_args()
+        LOGGER.debug(f"operand_image_entries: {json.dumps(self.operand_image_entries, indent=4, default=str)}")
+        LOGGER.debug(f"bundle_build_args: {json.dumps(self.bundle_build_args, indent=4, default=str)}")
+        
+        
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Applying registry and repo replacements for Operator and Operand Images...")
+        LOGGER.info("=============================================================================")
+        util.apply_registry_and_repo_replacements(
+            image_entries=self.operator_image_entry,
+            registry_mapping={self.build_config_dict['config']['replacements'][0]['registry']: CONSTANTS.PRODUCTION_REGISTRY},
+            repo_mappings=self.build_config_dict['config']['replacements'][0]['repo_mappings']
+        )
+        
+        util.apply_registry_and_repo_replacements(
+            image_entries=self.operand_image_entries,
+            registry_mapping={self.build_config_dict['config']['replacements'][0]['registry']: CONSTANTS.PRODUCTION_REGISTRY},
+            repo_mappings=self.build_config_dict['config']['replacements'][0]['repo_mappings']
+        )
+        # Extract operator image after replacement (now has registry.redhat.io URL)
+        self.operator_image = self.operator_image_entry[0]['value']
+        
+        LOGGER.info("Dumping operator_image_entry and operand_image_entries after registry/repo replacements...")
+        LOGGER.info(f"operator_image_entry: {json.dumps(self.operator_image_entry, indent=4, default=str)}")
+        LOGGER.info(f"operand_image_entries: {json.dumps(self.operand_image_entries, indent=4, default=str)}")
+
+        self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(self.operator_image)
+        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
+            'image'] = DoubleQuotedScalarString(self.operator_image)
+        
         self.patch_additional_csv_fields()
 
-        if self.latest_images:
+        if self.operand_image_entries:
             self.patch_related_images()
 
         self.process_annotation_yaml()
@@ -92,75 +183,18 @@ class bundle_processor:
 
         self.write_output_files()
 
-    def get_latest_images_from_operands_map(self):
-        #execute shell script to checkout the rhods-operator repo with the given git.commit
-        currentDir = Path(os.path.abspath(__file__)).parent
-        shellScriptPath = f'{currentDir}/./checkout-rhods-operator.sh'
-
-        if "odh-rhel9-operator" in self.git_labels_meta["map"]:
-            operator_name = "odh-rhel9-operator"
-        elif "odh-rhel8-operator" in self.git_labels_meta["map"]:
-            operator_name = "odh-rhel8-operator"
-
-        git_url = self.git_labels_meta["map"][operator_name][CONSTANTS.GIT_URL_LABEL_KEY]
-        git_commit = self.git_labels_meta["map"][operator_name][CONSTANTS.GIT_COMMIT_LABEL_KEY]
-        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
-        self.git_meta += f'{operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
-        #self.git_meta += f'{operator_name}.{CONSTANTS.GIT_URL_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
-        #self.git_meta += f'{operator_name}.{CONSTANTS.GIT_COMMIT_LABEL_KEY}="${{{{ {operator_name.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()} }}}}" \\\n'
-        # odh-dashboard.git.commit="${CI_ODH_DASHBOARD_UPSTREAM_COMMIT}" \
-        dest = f'{currentDir}/rhods-operator'
-        self.executeShellScript(f'{shellScriptPath} "{git_url}" {git_commit} {self.rhoai_version} {dest}')
-
-
-
-        operands_map_path = f'{dest}/build/operands-map.yaml'
-
-
-        latest_images = ruyaml.load(open(operands_map_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-
-        images = []
-
-        keys = ['RELATED_IMAGE_ODH_OPERATOR_IMAGE']
-        for index, image in enumerate(latest_images['relatedImages']):
-            if 'name' in image and image['name'] not in keys:
-                keys.append(image['name'])
-                images.append({'name': image['name'], 'value': image['value']})
-            # else:
-            #     latest_images['relatedImages'].remove(image)
-
-        self.generate_bundle_build_args()
-
-        return images
-
-
     def generate_bundle_build_args(self):
-        currentDir = Path(os.path.abspath(__file__)).parent
-        dest = f'{currentDir}/rhods-operator'
-        self.manifest_config_path = f'{dest}/build/manifests-config.yaml'
-        self.manifest_config_dict = yaml.safe_load(open(self.manifest_config_path))
-
-        for component, git_meta in {**self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
+        # manifest_config_dict is already loaded in patch_bundle_csv
+        bundle_build_args = ""
+        for component, git_meta in {**self.operator_git_metadata['map'], **self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
             if 'ref_type' not in git_meta:
-                self.git_meta += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_URL_LABEL_KEY]}\n'
-                self.git_meta += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_COMMIT_LABEL_KEY]}\n'
-                # self.git_meta += f'{component}.{CONSTANTS.GIT_URL_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
-                # self.git_meta += f'{component}.{CONSTANTS.GIT_COMMIT_LABEL_KEY}="${{{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}}}" \\\n'
+                bundle_build_args += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_URL_LABEL_KEY]}\n'
+                bundle_build_args += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_COMMIT_LABEL_KEY]}\n'
+
         with open(self.build_args_file_path, "w") as f:
-            f.write(self.git_meta)
+            f.write(bundle_build_args)
 
-
-    def executeShellScript(self, command):
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
-        process.wait()
-        returnCode = process.returncode
-        LOGGER.info(f'Shell script completed this exit code {returnCode}')
-        if returnCode > 0:
-            sys.exit(returnCode)
-        else:
-            return returnCode
-
-
+        return bundle_build_args
 
     def process_push_pipeline(self):
         current_on_cel_expr = self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression']
@@ -229,10 +263,10 @@ class bundle_processor:
                 for image in additional_images_dict['additionalImages']
             }.values())
             # Merge additional images patch
-            merged_image_list = self.latest_images + additional_images
+            merged_image_list = self.operand_image_entries + additional_images
         else:
             LOGGER.warning("additional-related-images key not found")
-            merged_image_list = self.latest_images
+            merged_image_list = self.operand_image_entries
 
 
         env_object = jsonupdate_ng.updateJson({'env': env_list}, {'env': merged_image_list}, meta={'listPatchScheme': {'$.env': {'key': 'name'}}}) #, 'keyType': 'partial', 'keySeparator': '@'
@@ -245,17 +279,6 @@ class bundle_processor:
         relatedImages += [{'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']} for image in merged_image_list]
         self.csv_dict['spec']['relatedImages'] = relatedImages
 
-    def apply_replacements_to_related_images(self):
-        for relatedImage in self.latest_images:
-            relatedImage['value'] = self.apply_replacement(relatedImage['value'])
-
-    def apply_replacement(self, value:str):
-        if value:
-            for replacement in self.build_config_dict['config']['replacements']:
-                intermediate_registry = replacement['registry']
-                for old, new in replacement['repo_mappings'].items():
-                    value = value.replace(f'{intermediate_registry}/{old}@', f'{CONSTANTS.PRODUCTION_REGISTRY}/{new}@')
-        return value
     def get_all_latest_images(self):
         latest_images = []
         qc = quay_controller('rhoai')
@@ -274,62 +297,6 @@ class bundle_processor:
                         break
         LOGGER.info(f'latest_images: {json.dumps(latest_images, indent=4)}')
         return latest_images
-
-    def get_all_latest_images_using_bundle_patch(self):
-        latest_images = []
-        missing_images = []
-        git_labels_meta = {'map': {}}
-
-        for image_entry in [image for image in self.patch_dict['patch']['relatedImages'] if image['name'] == 'RELATED_IMAGE_ODH_OPERATOR_IMAGE']:
-            parts = image_entry['value'].split('@')[0].split('/')
-            registry = parts[0]
-            org = parts[1]
-            qc = quay_controller(org)
-            repo = '/'.join(parts[2:])
-            version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
-            tags = qc.get_all_tags(repo, version_tag)
-            component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
-
-            if not tags:
-                LOGGER.warning(f'no tags found for {repo}')
-                missing_images.append(repo)
-            for tag in tags:
-                sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
-                signature = qc.get_tag_details(repo, sig_tag)
-                if signature:
-                    value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
-                    # if image_entry['value'] != value:
-                    image_entry['value'] = DoubleQuotedScalarString(value)
-                    latest_images.append(image_entry)
-
-                    manifest_digest = tag["manifest_digest"]
-                    if tag['is_manifest_list'] == True:
-                        image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
-                        if image_manifest_digests:
-                            manifest_digest = image_manifest_digests[0]
-
-
-                    labels = qc.get_git_labels(repo, manifest_digest)
-                    labels = {label['key']:label['value'] for label in labels if label['value']}
-                    git_url = labels[CONSTANTS.GIT_URL_LABEL_KEY]
-                    git_commit = labels[CONSTANTS.GIT_COMMIT_LABEL_KEY]
-                    if CONSTANTS.GITHUB_URL_LABEL_KEY in labels:
-                        git_url = labels[CONSTANTS.GITHUB_URL_LABEL_KEY]
-                        LOGGER.info("overridden the github url")
-                    if CONSTANTS.GITHUB_COMMIT_LABEL_KEY in labels:
-                        git_commit = labels[CONSTANTS.GITHUB_COMMIT_LABEL_KEY]
-                        LOGGER.info("overridden the github commit")
-
-                    git_labels_meta['map'][component_name] = {}
-                    git_labels_meta['map'][component_name][CONSTANTS.GIT_URL_LABEL_KEY] = git_url
-                    git_labels_meta['map'][component_name][CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
-
-                    break
-        if missing_images:
-            LOGGER.error(f'Images missing for following components : {missing_images}')
-            sys.exit(1)
-        LOGGER.info(f'latest_images: {json.dumps(latest_images, indent=4)}')
-        return latest_images, git_labels_meta
 
 
 
