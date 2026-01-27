@@ -395,9 +395,22 @@ def write_yaml_file(data: Dict, file_path: str) -> None:
         data: The dictionary to write to the YAML file
         file_path: The path to the output file
     """
-    LOGGER.info(f"Writing YAML to {file_path}")
+    LOGGER.info(f"  Writing YAML file: {file_path}")
     with open(file_path, 'w') as f:
         ruyaml.dump(data, f, Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
+
+
+def write_file(content: str, file_path: str) -> None:
+    """
+    Write string content to a file.
+
+    Args:
+        content: The string content to write
+        file_path: The path to the output file
+    """
+    LOGGER.info(f"  Writing file: {file_path}")
+    with open(file_path, 'w') as f:
+        f.write(content)
 
 
 def fetch_file_data_from_github(

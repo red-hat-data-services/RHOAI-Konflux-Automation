@@ -5,7 +5,6 @@ from pathlib import Path
 from jsonupdate_ng import jsonupdate_ng
 import argparse
 import yaml
-import ruamel.yaml as ruyaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import json
 
@@ -172,38 +171,34 @@ class bundle_processor:
         self.patch_related_images()
         self.process_annotation_yaml()
 
-        self.process_push_pipeline()
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Processing push pipeline...")
+        LOGGER.info("=============================================================================")
+        self.is_push_pipeline_updated, self.push_pipeline_dict = util.process_push_pipeline(
+            self.push_pipeline_dict, self.push_pipeline_operation
+        )
 
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Writing output files...")
+        LOGGER.info("=============================================================================")
         self.write_output_files()
 
     def generate_bundle_build_args(self):
-        # manifest_config_dict is already loaded in patch_bundle_csv
+        """
+        Generates bundle build arguments from git metadata.
+
+        Returns:
+            String containing build arguments in KEY=VALUE format
+        """
         bundle_build_args = ""
         for component, git_meta in {**self.operator_git_metadata['map'], **self.manifest_config_dict['map'], **self.manifest_config_dict['additional_meta']}.items():
             if 'ref_type' not in git_meta:
                 bundle_build_args += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_URL_LABEL_KEY]}\n'
                 bundle_build_args += f'{component.replace("-", "_").upper()}_{CONSTANTS.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_meta[CONSTANTS.GIT_COMMIT_LABEL_KEY]}\n'
 
-        with open(self.build_args_file_path, "w") as f:
-            f.write(bundle_build_args)
-
         return bundle_build_args
-
-    def process_push_pipeline(self):
-        current_on_cel_expr = self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression']
-        disable_ext = 'non-existent-file.non-existent-ext'
-        disable_expr = f'"{disable_ext}".pathChanged() && '
-        updated=False
-        if self.push_pipeline_operation.lower() == 'enable' and disable_ext in current_on_cel_expr:
-            self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression'] = current_on_cel_expr.replace(disable_expr, '')
-            updated = True
-        elif self.push_pipeline_operation.lower() == 'disable' and disable_ext not in current_on_cel_expr:
-            self.push_pipeline_dict['metadata']['annotations']['pipelinesascode.tekton.dev/on-cel-expression'] = f'{disable_expr}{current_on_cel_expr}'
-            updated = True
-
-        if updated:
-            ruyaml.dump(self.push_pipeline_dict, open(self.push_pipeline_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper,
-                    default_flow_style=False)
 
     def patch_csv_fields(self):
         """
@@ -280,12 +275,18 @@ class bundle_processor:
         LOGGER.info("  Annotation processing complete!")
 
     def write_output_files(self):
-        # docs = [self.csv_dict]
-        # yaml.add_representer(str, str_presenter)
-        # yaml.representer.SafeRepresenter.add_representer(str, str_presenter)
-        # yaml.safe_dump_all(docs, open(self.output_file_path, 'w'), sort_keys=False)
-        ruyaml.dump(self.csv_dict, open(self.output_file_path, 'w'), Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
-        yaml.safe_dump(self.annotation_dict, open(self.annotation_yaml_path, 'w'), sort_keys=False)
+        """
+        Writes all modified files to disk.
+        """
+        util.write_yaml_file(self.csv_dict, self.output_file_path)
+        util.write_yaml_file(self.annotation_dict, self.annotation_yaml_path)
+
+        util.write_file(self.bundle_build_args, self.build_args_file_path)
+
+        if self.is_push_pipeline_updated:
+            util.write_yaml_file(self.push_pipeline_dict, self.push_pipeline_yaml_path)
+
+        LOGGER.info("  Output files written successfully!")
 
     def patch_related_images(self):
         """
@@ -298,7 +299,7 @@ class bundle_processor:
         LOGGER.info("Updating deployment env vars...")
         # Get existing env vars from the deployment container
         existing_env_list = self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env']
-        existing_env_list = [dict(item) for item in existing_env_list]  # Convert ruamel objects to plain dicts
+        existing_env_list = util.to_plain_dict(existing_env_list)
         LOGGER.debug(f"  Existing deployment env vars: {json.dumps(existing_env_list, indent=4, default=str)}")
 
         # Load and merge additional images if defined in patch config
