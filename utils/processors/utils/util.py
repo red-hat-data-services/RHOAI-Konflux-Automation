@@ -373,13 +373,13 @@ def load_yaml_file(file_path: str, parser: str = 'ruamel') -> Dict:
     Returns:
         The parsed YAML content as a dictionary
     """
-    LOGGER.info(f"Loading yaml file: {file_path}")
+    LOGGER.info(f"  Parsing yaml file: {file_path}")
     with open(file_path, 'r') as f:
         if parser == 'ruamel':
-            LOGGER.debug("Using ruamel.yaml parser")
+            LOGGER.debug("  Using ruamel.yaml parser")
             return ruyaml.load(f, Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
         elif parser == 'pyyaml':
-            LOGGER.debug("Using pyyaml parser")
+            LOGGER.debug("  Using pyyaml parser")
             return yaml.safe_load(f)
         else:
             raise ValueError(f"Unknown parser '{parser}'. Use 'ruamel' or 'pyyaml'.")

@@ -161,22 +161,15 @@ class bundle_processor:
             registry_mapping={self.build_config_dict['config']['replacements'][0]['registry']: CONSTANTS.PRODUCTION_REGISTRY},
             repo_mappings=self.build_config_dict['config']['replacements'][0]['repo_mappings']
         )
-        # Extract operator image after replacement (now has registry.redhat.io URL)
-        self.operator_image = self.operator_image_entry[0]['value']
         
         LOGGER.info("Dumping operator_image_entry and operand_image_entries after registry/repo replacements...")
         LOGGER.info(f"operator_image_entry: {json.dumps(self.operator_image_entry, indent=4, default=str)}")
         LOGGER.info(f"operand_image_entries: {json.dumps(self.operand_image_entries, indent=4, default=str)}")
-
-        self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(self.operator_image)
-        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-            'image'] = DoubleQuotedScalarString(self.operator_image)
         
-        self.patch_additional_csv_fields()
 
-        if self.operand_image_entries:
-            self.patch_related_images()
 
+        self.patch_csv_fields()
+        self.patch_related_images()
         self.process_annotation_yaml()
 
         self.process_push_pipeline()
@@ -212,28 +205,79 @@ class bundle_processor:
             ruyaml.dump(self.push_pipeline_dict, open(self.push_pipeline_yaml_path, 'w'), Dumper=ruyaml.RoundTripDumper,
                     default_flow_style=False)
 
-    def patch_additional_csv_fields(self):
-        self.csv_dict['metadata']['annotations']['createdAt'] = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        self.csv_dict['metadata']['name'] = f'{CONSTANTS.OPERATOR_NAME}.{self.patch_dict["patch"]["version"]}'
-        self.csv_dict['spec']['version'] = DoubleQuotedScalarString(self.patch_dict["patch"]["version"])
+    def patch_csv_fields(self):
+        """
+        Patches CSV fields including operator image, version, and custom fields from csv-patch file.
+        """
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Patching CSV fields...")
+        LOGGER.info("=============================================================================")
 
+        # Extract operator image after replacement (now has registry.redhat.io URL)
+        # We already validate above that odh_operator_entry has exactly one entry,
+        # and operator_image_entry is derived from it via fetch_latest_images_and_git_metadata(),
+        # so we can safely access [0] here.
+        self.operator_image = self.operator_image_entry[0]['value']
 
-        #remove skip-range and replaces if present
-        self.csv_dict['metadata']['annotations'].pop('olm.skipRange', None)
-        self.csv_dict['spec'].pop('replaces', None)
+        # Set operator container image in annotations and deployment spec
+        LOGGER.info("Updating operator container image...")
+        self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(self.operator_image)
+        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
+            'image'] = DoubleQuotedScalarString(self.operator_image)
+        LOGGER.info(f"  containerImage: {self.operator_image}")
 
-        #sync csv-patch
+        LOGGER.info("Updating version and metadata fields...")
+        created_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        version = self.patch_dict["patch"]["version"]
+        csv_name = f'{CONSTANTS.OPERATOR_NAME}.{version}'
+        self.csv_dict['metadata']['annotations']['createdAt'] = created_at
+        self.csv_dict['metadata']['name'] = csv_name
+        self.csv_dict['spec']['version'] = DoubleQuotedScalarString(version)
+        LOGGER.info(f"  createdAt: {created_at}")
+        LOGGER.info(f"  metadata.name: {csv_name}")
+        LOGGER.info(f"  spec.version: {version}")
+
+        LOGGER.info("Removing olm.skipRange and replaces fields if present...")
+        removed_skip_range = self.csv_dict['metadata']['annotations'].pop('olm.skipRange', None)
+        removed_replaces = self.csv_dict['spec'].pop('replaces', None)
+        if removed_skip_range:
+            LOGGER.info(f"  Removed olm.skipRange: {removed_skip_range} field")
+        if removed_replaces:
+            LOGGER.info(f"  Removed replaces: {removed_replaces} field")
+
+        LOGGER.info("Applying CSV patches...")
         csv_patch_file = self.patch_dict['patch']['additional-fields']['file']
-        csv_patch_dict = yaml.safe_load(open(f'{Path(self.patch_yaml_path).parent.absolute()}/{csv_patch_file}'))
-
+        csv_patch_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{csv_patch_file}'
+        LOGGER.info(f"  Loading csv-patch file: {csv_patch_file}")
+        csv_patch_dict = util.load_yaml_file(csv_patch_path, parser='pyyaml')
+        LOGGER.debug(f"  csv_patch_dict: {json.dumps(csv_patch_dict, indent=4, default=str)}")
         self.csv_dict = jsonupdate_ng.updateJson(self.csv_dict, csv_patch_dict)
-
-
+        LOGGER.info("  CSV patches applied successfully!")
 
 
     def process_annotation_yaml(self):
-        self.annotation_dict['annotations'].pop('operators.operatorframework.io.bundle.channels.v1', None)
-        self.annotation_dict['annotations'].pop('operators.operatorframework.io.bundle.channel.default.v1', None)
+        """
+        Processes annotation.yaml by removing channel-related annotations.
+        
+        These annotations are no longer required after migrating to File Based Catalogs (FBC).
+        """
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Processing annotation.yaml...")
+        LOGGER.info("=============================================================================")
+        
+        # Remove channel annotations (no longer required in File Based Catalogs)
+        LOGGER.info("Removing channel annotations (not required in FBC)...")
+        removed_channels = self.annotation_dict['annotations'].pop('operators.operatorframework.io.bundle.channels.v1', None)
+        removed_default = self.annotation_dict['annotations'].pop('operators.operatorframework.io.bundle.channel.default.v1', None)
+        
+        if removed_channels:
+            LOGGER.info(f"  Removed bundle.channels.v1: {removed_channels}")
+        if removed_default:
+            LOGGER.info(f"  Removed bundle.channel.default.v1: {removed_default}")
+        
+        LOGGER.info("  Annotation processing complete!")
 
     def write_output_files(self):
         # docs = [self.csv_dict]
@@ -244,16 +288,28 @@ class bundle_processor:
         yaml.safe_dump(self.annotation_dict, open(self.annotation_yaml_path, 'w'), sort_keys=False)
 
     def patch_related_images(self):
-        SCHEMA = 'relatedImages'
-        PATCH_SCHEMA = 'olm.channels'
-        env_list = self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-                'env']
-        env_list = [dict(item) for item in env_list]
+        """
+        Patches CSV's deployment env vars and builds spec.relatedImages list for disconnected installations.
+        """
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Patching related images in CSV...")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Updating deployment env vars...")
+        # Get existing env vars from the deployment container
+        existing_env_list = self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env']
+        existing_env_list = [dict(item) for item in existing_env_list]  # Convert ruamel objects to plain dicts
+        LOGGER.debug(f"  Existing deployment env vars: {json.dumps(existing_env_list, indent=4, default=str)}")
 
+        # Load and merge additional images if defined in patch config
         if 'additional-related-images' in self.patch_dict['patch']:
             additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
-            additional_images_dict = yaml.safe_load(open(f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'))
-            # Drop tags from image names and deduplicate entries based on the 'name' field only.
+            additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
+            LOGGER.info(f"  Adding additional images from: {additional_images_file}")
+            
+            additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
+            
+            # Drop tags from image values and deduplicate by name.
             # Later entries with the same name will overwrite earlier ones.
             additional_images = list({
                 image["name"]: {
@@ -262,22 +318,48 @@ class bundle_processor:
                 }
                 for image in additional_images_dict['additionalImages']
             }.values())
-            # Merge additional images patch
-            merged_image_list = self.operand_image_entries + additional_images
+            LOGGER.debug(f"  additional_images: {json.dumps(additional_images, indent=4, default=str)}")
+
+            updated_env_list = self.operand_image_entries + additional_images
         else:
-            LOGGER.warning("additional-related-images key not found")
-            merged_image_list = self.operand_image_entries
+            updated_env_list = self.operand_image_entries
 
+        LOGGER.debug(f"  updated_env_list: {json.dumps(updated_env_list, indent=4, default=str)}")
 
-        env_object = jsonupdate_ng.updateJson({'env': env_list}, {'env': merged_image_list}, meta={'listPatchScheme': {'$.env': {'key': 'name'}}}) #, 'keyType': 'partial', 'keySeparator': '@'
-        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
-            'env'] = env_object['env']
+        # Merge image entries into deployment env vars using jsonupdate_ng
+        # Uses 'name' as key for matching/merging list items
+        env_object = jsonupdate_ng.updateJson(
+            {'env': existing_env_list},
+            {'env': updated_env_list},
+            meta={'listPatchScheme': {'$.env': {'key': 'name'}}}
+        )
+        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env'] = env_object['env']
+        LOGGER.info("  Deployment env vars updated successfully!")
+        LOGGER.debug(f"  Updated deployment env vars: {json.dumps(env_object['env'], indent=4, default=str)}")
+
+        # Build spec.relatedImages list for OLM
+        LOGGER.info("Updating spec.relatedImages list...")
         relatedImages = []
+        
+        # Add images from annotations (registry.redhat.io with digest)
+        LOGGER.info("  Adding entries from annotations...")
         for name, value in self.csv_dict['metadata']['annotations'].items():
             if value.startswith(CONSTANTS.PRODUCTION_REGISTRY) and '@sha256:' in value:
-                relatedImages.append({'name': f'{value.split("/")[-1].replace("@sha256:", "-")}-annotation', 'image': value})
-        relatedImages += [{'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']} for image in merged_image_list]
+                image_name = f'{value.split("/")[-1].replace("@sha256:", "-")}-annotation'
+                entry = {'name': image_name, 'image': value}
+                relatedImages.append(entry)
+                LOGGER.debug(entry)
+
+        # Add updated env list images with transformed names (RELATED_IMAGE_X_IMAGE -> x_image)
+        LOGGER.info("  Adding entries from deployment env vars...")
+        for image in updated_env_list:
+            entry = {'name': image['name'].replace('RELATED_IMAGE_', '').lower(), 'image': image['value']}
+            relatedImages.append(entry)
+            LOGGER.debug(entry)
+        
         self.csv_dict['spec']['relatedImages'] = relatedImages
+        LOGGER.info("  spec.relatedImages updated successfully!")
+        LOGGER.debug(f"  Updated relatedImages: {json.dumps(relatedImages, indent=4, default=str)}")
 
     def get_all_latest_images(self):
         latest_images = []
