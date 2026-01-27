@@ -519,5 +519,5 @@ def apply_registry_and_repo_replacements(
                     f'{target_registry}/{target_repo}@'
                 )
 
-        image_entry['value'] = new_value
+        image_entry['value'] = DoubleQuotedScalarString(new_value)
         LOGGER.debug(f"  {original_value} -> {new_value}")
