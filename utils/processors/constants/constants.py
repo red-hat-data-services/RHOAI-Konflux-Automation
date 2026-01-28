@@ -15,3 +15,5 @@ PRODUCTION_REGISTRY = 'registry.redhat.io'
 
 # Operator constants
 OPERATOR_NAME = 'rhods-operator'
+OPERANDS_MAP_PATH = 'build/operands-map.yaml'
+MANIFESTS_CONFIG_PATH = 'build/manifests-config.yaml'
