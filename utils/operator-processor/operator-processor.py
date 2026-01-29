@@ -15,8 +15,7 @@ class operator_processor:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
     OPERATOR_NAME = 'rhods-operator'
     GIT_URL_LABEL_KEY = 'git.url'
-    # GIT_COMMIT_LABEL_KEY = 'git.commit'
-    GIT_COMMIT_LABEL_KEY = 'vcs-ref' # temporary change
+    GIT_COMMIT_LABEL_KEY = 'git.commit'
 
     def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
         self.patch_yaml_path = patch_yaml_path
@@ -95,20 +94,24 @@ class operator_processor:
             if 'ref_type' not in manifest_config or ('ref_type' in manifest_config and manifest_config['ref_type'] != 'branch'):
                 git_url = self.git_labels_meta['map'][component][self.GIT_URL_LABEL_KEY]
                 git_commit = self.git_labels_meta['map'][component][self.GIT_COMMIT_LABEL_KEY]
-                if git_url:
-                    manifest_config[self.GIT_URL_LABEL_KEY] = git_url # temporary making git.url optional
-                if git_commit:
-                    # manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
-                    manifest_config['git.commit'] = git_commit # temporary change
+                if git_url and git_commit:
+                    manifest_config[self.GIT_URL_LABEL_KEY] = git_url
+                    manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
+                # if git_url:
+                #     manifest_config[self.GIT_URL_LABEL_KEY] = git_url # temporary making git.url optional
+                # if git_commit:
+                #     # manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
+                #     manifest_config['git.commit'] = git_commit # temporary change
                 else:
                     missing_git_labels.append(component)
-        # self.manifest_config_dict['additional_meta'] = {} #temporarily disabling it
+        self.manifest_config_dict['additional_meta'] = {}
         for component, git_meta in self.git_labels_meta['map'].items():
             if component not in self.manifest_config_dict['map']:
-                if component in self.manifest_config_dict['additional_meta']:
-                    self.manifest_config_dict['additional_meta'][component]['git.commit'] = git_meta['vcs-ref'] if 'vcs-ref' in git_meta else git_meta['git.commit'] if 'git.commit' in git_meta else ''
-                else:
-                    self.manifest_config_dict['additional_meta'][component] = git_meta
+                self.manifest_config_dict['additional_meta'][component] = git_meta
+                # if component in self.manifest_config_dict['additional_meta']:
+                #     self.manifest_config_dict['additional_meta'][component]['git.commit'] = git_meta['vcs-ref'] if 'vcs-ref' in git_meta else git_meta['git.commit'] if 'git.commit' in git_meta else ''
+                # else:
+                #     self.manifest_config_dict['additional_meta'][component] = git_meta
         if missing_git_labels:
             print('git.url and git.commit labels missing/empty for : ', missing_git_labels)
             sys.exit(1)
