@@ -46,10 +46,7 @@ class operator_processor:
         LOGGER.debug(f"push_pipeline_dict: {json.dumps(self.push_pipeline_dict, indent=4, default=str)}")
         LOGGER.info("All yaml files loaded successfully!")
 
-    def refresh_operands_map_and_manifest_config(self):
-        """
-        Refreshes operands_map and manifest_config with the latest image digests and git metadata.
-        """
+    def process(self):
         LOGGER.info("")
         LOGGER.info("=============================================================================")
         LOGGER.info("Syncing relatedImages list from Bundle Patch...")
@@ -242,7 +239,7 @@ if __name__ == '__main__':
 
     if args.operation.lower() == 'process-operator-yamls':
         processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path)
-        processor.refresh_operands_map_and_manifest_config()
+        processor.process()
 
     # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
     # operands_map_path = '/home/dchouras/RHODS/DevOps/rhods-operator/build/operands-map.yaml'
@@ -257,4 +254,4 @@ if __name__ == '__main__':
     #                                operands_map_path=operands_map_path, nudging_yaml_path=nudging_yaml_path,
     #                                manifest_config_path=manifest_config_path,
     #                              push_pipeline_yaml_path=push_pipeline_yaml_path, push_pipeline_operation=push_pipeline_operation)
-    # processor.refresh_operands_map_and_manifest_config
+    # processor.process()
