@@ -191,7 +191,7 @@ class operator_processor:
                 git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
                 git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
 
-                    break
+                break
         if missing_images:
             print('Images missing for following components : ', missing_images)
             sys.exit(1)
