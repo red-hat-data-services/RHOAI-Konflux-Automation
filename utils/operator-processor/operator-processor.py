@@ -167,29 +167,29 @@ class operator_processor:
             for tag in tags:
                 sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
                 signature = qc.get_tag_details(repo, sig_tag)
-                if signature:
-                    value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
-                    # if image_entry['value'] != value:
-                    image_entry['value'] = DoubleQuotedScalarString(value)
-                    latest_images.append(image_entry)
+                # if signature:
+                value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
+                # if image_entry['value'] != value:
+                image_entry['value'] = DoubleQuotedScalarString(value)
+                latest_images.append(image_entry)
 
-                    manifest_digest = tag["manifest_digest"]
-                    print(f'manifest_digest = {manifest_digest}')
-                    if tag['is_manifest_list'] == True:
-                        print('Found to be a multi-arch image..')
-                        image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
-                        if image_manifest_digests:
-                            manifest_digest = image_manifest_digests[0]
-                            print(f'will be using the image with manifest_digest {manifest_digest} to find the tags and lables')
+                manifest_digest = tag["manifest_digest"]
+                print(f'manifest_digest = {manifest_digest}')
+                if tag['is_manifest_list'] == True:
+                    print('Found to be a multi-arch image..')
+                    image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
+                    if image_manifest_digests:
+                        manifest_digest = image_manifest_digests[0]
+                        print(f'will be using the image with manifest_digest {manifest_digest} to find the tags and lables')
 
 
-                    labels = qc.get_git_labels(repo, manifest_digest)
-                    labels = {label['key']:label['value'] for label in labels if label['value']}
-                    git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
-                    git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
-                    git_labels_meta['map'][component_name] = {}
-                    git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
-                    git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
+                labels = qc.get_git_labels(repo, manifest_digest)
+                labels = {label['key']:label['value'] for label in labels if label['value']}
+                git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
+                git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
+                git_labels_meta['map'][component_name] = {}
+                git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
+                git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
 
                     break
         if missing_images:
