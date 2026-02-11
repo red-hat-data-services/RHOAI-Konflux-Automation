@@ -11,7 +11,7 @@ import sys
 class fbc_processor:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
     # Channel names that are reset from patch (no merge with base catalog).
-    RESET_CHANNELS = {'alpha'}
+    RESET_CHANNELS = {'beta'}
 
     def __init__(self, build_config_path:str, catalog_yaml_path:str, patch_yaml_path:str, single_bundle_path:str, output_file_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
         self.build_config_path = build_config_path

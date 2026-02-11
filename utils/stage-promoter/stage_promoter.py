@@ -20,7 +20,7 @@ class stage_promoter:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
     PACKAGE_NAME = 'rhods-operator'
     # Channel names that are reset from patch (no merge with base catalog).
-    RESET_CHANNELS = {'alpha'}
+    RESET_CHANNELS = {'beta'}
     # Version after PACKAGE_NAME.: X.Y.Z-ea.N or X.Y.Z-ea.N.H (H optional). X=0-9, Y/Z=0-99.
     EA_VERSION_PATTERN = re.compile(r"^[0-9]\.[0-9]{1,2}\.[0-9]{1,2}-ea\.[0-9]+(\.[0-9]+)?$")
 
@@ -102,9 +102,9 @@ class stage_promoter:
                 # If reset channel or new channel, take full definition from patch.
                 self.catalog_dict[SCHEMA][channel['name']] = channel
 
-        # Keep only the latest EA drop in the alpha channel to support fresh install only.
-        if 'alpha' in self.catalog_dict[SCHEMA]:
-            self.prune_channel_to_latest_ea(SCHEMA, 'alpha')
+        # Keep only the latest EA drop in the beta channel to support fresh install only.
+        if 'beta' in self.catalog_dict[SCHEMA]:
+            self.prune_channel_to_latest_ea(SCHEMA, 'beta')
 
     # updates a given OLM channel so that only the latest Early Access (EA) version remains in entries.
     def prune_channel_to_latest_ea(self, schema, channel_name):
