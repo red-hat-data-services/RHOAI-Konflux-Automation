@@ -218,6 +218,8 @@ class snapshot_processor:
                 self.git_meta += f'{key.replace("-", "_").replace(".", "_").upper()}={value}\n'
             elif key == "opendatahub-operator.image":
                 self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={value}\n"
+            elif key == "build-metadata-url":
+                self.git_meta += f"BUILD_METADATA_URL={value}\n"
 
         with open(self.catalog_build_args_file_path, "w") as f:
             f.write(self.git_meta)

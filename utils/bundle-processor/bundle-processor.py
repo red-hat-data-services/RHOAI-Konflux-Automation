@@ -97,35 +97,24 @@ class bundle_processor:
 
         operator_name = "opendatahub-operator"
         metadata_repo = "https://github.com/opendatahub-io/odh-build-metadata.git"
-
+        metadata_url = f"https://github.com/opendatahub-io/odh-build-metadata/tree/main/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}"
+        raw_operands_map_url = f"https://raw.githubusercontent.com/opendatahub-io/odh-build-metadata/refs/heads/main/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}/operands-map.yaml"
 
         git_url = self.git_labels_meta["map"][operator_name][self.GIT_URL_LABEL_KEY]
         git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
+        
 
-        # add the image as a build arg (and by extension, a bundle build label) in order to make tracer be able to query odh-build-metadata easily
-        self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}"
+        # add the image as a build arg in order to make tracer be able to query odh-build-metadata easily
+        self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}\n"
+        self.git_meta += f"BUILD_METADATA_URL={metadata_url}\n"
 
         
-        dest = f'{currentDir}/odh-build-metadata'
-        repo = Repo.init(dest)
-
-        # Create a new remote if there isn't one already created
-        if not repo.remotes:
-            origin = repo.create_remote("origin", metadata_repo)
-        else:
-            origin = repo.remotes[0]
-
-        origin.fetch()
-        git = repo.git()
-        git.checkout("origin/main", "--", "components/odh-operator")
-
-
-        operands_map_path = f'{dest}/components/odh-operator/{self.ODH_OPERATOR_IMAGE_SHA}/operands-map.yaml'
-
-
-        latest_images = ruyaml.load(open(operands_map_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
+        response = requests.get(raw_operands_map_url)
+        response.raise_for_status()
+        operands_map = response.text
+        latest_images = ruyaml.load(operands_map, Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
 
         images = []
 
