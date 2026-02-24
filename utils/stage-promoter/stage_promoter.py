@@ -87,14 +87,15 @@ class stage_promoter:
         self.prune_channel_to_latest_ea(SCHEMA, 'beta')
 
     def prune_channel_to_latest_ea(self, schema, channel_name):
-        """Prune channel to the latest EA (Early Access) version. No-op if channel has no EA versions."""
+        """Prune channel to the latest EA (Early Access) version. Skip if this version has no EA entries."""
         channel = self.catalog_dict[schema].get(channel_name)
         if not channel:
             return
         entries = channel.get('entries') or []
         ea_entries = [e for e in entries if self._is_ea_entry(e)]
         if not ea_entries:
-            return  # Skip when channel has no EA versions instead of raising ValueError
+            # This version has no EA versions; skip pruning (do not raise).
+            return
         # Prune to only the latest EA entry (first in OLM order is typically latest)
         channel['entries'] = ea_entries[:1]
 
