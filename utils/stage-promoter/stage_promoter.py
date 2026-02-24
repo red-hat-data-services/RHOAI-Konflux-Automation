@@ -84,7 +84,24 @@ class stage_promoter:
                 self.catalog_dict[SCHEMA][channel['name']] = jsonupdate_ng.updateJson(self.catalog_dict[SCHEMA][channel['name']], channel, meta={'listPatchScheme': {'$.entries': {'key': 'name'}}})
             else:
                 self.catalog_dict[SCHEMA][channel['name']] = channel
+        self.prune_channel_to_latest_ea(SCHEMA, 'beta')
 
+    def prune_channel_to_latest_ea(self, schema, channel_name):
+        """Prune channel to the latest EA (Early Access) version. No-op if channel has no EA versions."""
+        channel = self.catalog_dict[schema].get(channel_name)
+        if not channel:
+            return
+        entries = channel.get('entries') or []
+        ea_entries = [e for e in entries if self._is_ea_entry(e)]
+        if not ea_entries:
+            return  # Skip when channel has no EA versions instead of raising ValueError
+        # Prune to only the latest EA entry (first in OLM order is typically latest)
+        channel['entries'] = ea_entries[:1]
+
+    def _is_ea_entry(self, entry):
+        """Return True if the channel entry is an EA (Early Access) bundle."""
+        name = entry.get('name') or ''
+        return 'ea' in name.lower()
 
     def patch_olm_bundles(self):
         self.patch_current_release_bundle_schema()
