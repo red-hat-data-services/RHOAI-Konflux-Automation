@@ -12,6 +12,7 @@ GITHUB_COMMIT_LABEL_KEY = 'github.commit'
 
 # Registry constants
 PRODUCTION_REGISTRY = 'registry.redhat.io'
+STAGE_REGISTRY = 'registry.stage.redhat.io'
 
 # Operator constants
 OPERATOR_NAME = 'rhods-operator'
