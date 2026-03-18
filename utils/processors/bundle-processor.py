@@ -315,7 +315,7 @@ class bundle_processor:
         if 'additional-related-images' in self.patch_dict['patch']:
             additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
             additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
-            LOGGER.info("  Adding iamges from additional images patch...")
+            LOGGER.info("  Adding images from additional images patch...")
             
             additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
             
@@ -328,6 +328,24 @@ class bundle_processor:
                 }
                 for image in additional_images_dict['additionalImages']
             }.values())
+
+            LOGGER.debug("  Validating registries and applying replacements for additional images...")
+            allowed_registries = {CONSTANTS.PRODUCTION_REGISTRY, CONSTANTS.STAGE_REGISTRY}
+            disallowed_images = []
+            for image in additional_images:
+                registry = image['value'].split('/')[0]
+                if registry not in allowed_registries:
+                    disallowed_images.append(image)
+                else:
+                    original_value = image['value']
+                    image['value'] = image['value'].replace(CONSTANTS.STAGE_REGISTRY, CONSTANTS.PRODUCTION_REGISTRY)
+                    if image['value'] != original_value:
+                        LOGGER.debug(f"    {original_value} -> {image['value']}")
+            if disallowed_images:
+                LOGGER.error(f"{additional_images_file} contains entries from disallowed registries. Allowed registries are: {allowed_registries}")
+                LOGGER.error(f"{json.dumps(disallowed_images, indent=4, default=str)}")
+                sys.exit(1)
+
             LOGGER.debug(f"  additional_images: {json.dumps(additional_images, indent=4, default=str)}")
 
             new_env_vars = self.operand_image_entries + additional_images
