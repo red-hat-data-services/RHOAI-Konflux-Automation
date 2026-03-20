@@ -8,20 +8,59 @@ import re
 class catalog_validator:
     MISSING_BUNDLE_EXCEPTIONS = ['rhods-operator.2.9.0', 'rhods-operator.2.9.1'] #ref - RHOAIENG-8828
     MIN_OCP_VERSION_FOR_RHOAI_30 = 419
+    # Matches both raw image tags (e.g. "v3.4.0-ea.1") and operator bundle names
+    # (e.g. "rhods-operator.3.4.0-ea.1"). The $ anchor rejects build-number tags
+    # (v2.16.0-1733155920) and source tags (v2.16.0-source) since they have
+    # trailing content that doesn't match end-of-string.
+    #
+    # Capture groups:
+    #   1 = full version string  (e.g. "3.4.0-ea.1")
+    #   2 = major, 3 = minor, 4 = patch
+    #   5 = EA sequence number   (None for GA)
+    #   6 = EA hotfix number     (None if no hotfix)
+    VERSION_REGEX = re.compile(
+        r'(?:rhods-operator\.|v?)((\d+)\.(\d+)\.(\d+)(?:-ea\.(\d+)(?:\.(\d+))?)?)$'
+    )
 
     class rhods_operator:
-        def __init__(self, version:str):
+        def __init__(self, version: str):
             self.version = version
+            self._parsed_tuple = self._parse_version(version)
+
+        def _parse_version(self, version_string):
+            """
+            Parse 'rhods-operator.MAJOR.MINOR.PATCH[-ea.SEQ[.HOTFIX]]'
+            into a comparable tuple.
+
+            GA versions get is_ga=1 (sorts higher than EA's is_ga=0),
+            so 3.4.0 (GA) > 3.4.0-ea.N (any EA).
+            """
+            match_result = catalog_validator.VERSION_REGEX.match(version_string)
+            if not match_result:
+                raise ValueError(f"Cannot parse operator version: {version_string}")
+
+            major = int(match_result.group(2))
+            minor = int(match_result.group(3))
+            patch = int(match_result.group(4))
+            ea_sequence = match_result.group(5)
+            ea_hotfix = match_result.group(6)
+
+            if ea_sequence is not None:
+                is_ga = 0
+                ea_sequence_num = int(ea_sequence)
+                ea_hotfix_num = int(ea_hotfix) if ea_hotfix else 0
+            else:
+                is_ga = 1
+                ea_sequence_num = 0
+                ea_hotfix_num = 0
+
+            return (major, minor, patch, is_ga, ea_sequence_num, ea_hotfix_num)
 
         def __ge__(self, other):
-            self.semver = self.version.replace('rhods-operator.', '').split('.')
-            other.semver = other.version.replace('rhods-operator.', '').split('.')
-            return True if self.semver[0] > other.semver[0] else (True if self.semver[1] > other.semver[1] else self.semver[2] >= other.semver[2] if self.semver[1] == other.semver[1] else False) if self.semver[0] == other.semver[0] else False
+            return self._parsed_tuple >= other._parsed_tuple
 
         def __le__(self, other):
-            self.semver = self.version.replace('rhods-operator.', '').split('.')
-            other.semver = other.version.replace('rhods-operator.', '').split('.')
-            return True if self.semver[0] < other.semver[0] else (True if self.semver[1] < other.semver[1] else self.semver[2] <= other.semver[2] if self.semver[1] == other.semver[1] else False) if self.semver[0] == other.semver[0] else False
+            return self._parsed_tuple <= other._parsed_tuple
 
     def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation):
         self.build_config_path = build_config_path
@@ -36,9 +75,12 @@ class catalog_validator:
 
         self.shipped_rhoai_versions = open(self.shipped_rhoai_versions_path).readlines()
 
-        self.shipped_rhoai_versions = sorted(list(
-            set([version.split('-')[0].strip('\n').replace('v', '') for version in self.shipped_rhoai_versions if
-                 version.count('.') > 1])))
+        self.shipped_rhoai_versions = sorted(list(set(
+            version_match.group(1)
+            for raw_version in self.shipped_rhoai_versions
+            for version_match in [self.VERSION_REGEX.match(raw_version.strip())]
+            if version_match
+        )))
         print('shipped_rhoai_versions', self.shipped_rhoai_versions)
 
     def parse_catalog_yaml(self, catalog_yaml_path):
@@ -62,14 +104,18 @@ class catalog_validator:
 
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'rhods-operator.{rhoai_version}'
+                is_3x_on_unsupported_ocp = (
+                    rhoai_version.startswith('3')
+                    and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30
+                )
+
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
-                    if not (rhoai_version.startswith(
-                            'v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30):  # bypassing check for 3.0 for OCP < 4.19
+                    if is_3x_on_unsupported_ocp:
                         print(f"Skipping the catalog validation for {rhoai_version} bundle for OCP {ocp_version}, since 3.x is not shipped on this OCP version!")
                         continue
                     missing_bundles[ocp_version].append(operator_name)
 
-                if operator_name in bundles and rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30: # adding check to ensure 3.x doesn't land on OCP < 4.19
+                if operator_name in bundles and is_3x_on_unsupported_ocp:
                     incorrect_3x_bundles[ocp_version].append(operator_name)
 
         print('missing_bundles', missing_bundles)
@@ -111,8 +157,13 @@ class catalog_validator:
 
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'rhods-operator.{rhoai_version}'
+                is_3x_on_unsupported_ocp = (
+                    rhoai_version.startswith('3')
+                    and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30
+                )
+
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
-                    if not (rhoai_version.startswith('v3') and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30): # bypassing check for 3.0 for OCP < 4.19
+                    if not (is_3x_on_unsupported_ocp):
                         if not self.rhods_operator(operator_name) >= self.rhods_operator(discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(onboarding_map[ocp_version]):
                             missing_bundles[pcc_file].append(operator_name)
                         else:
