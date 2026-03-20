@@ -36,9 +36,14 @@ class catalog_validator:
 
         self.shipped_rhoai_versions = open(self.shipped_rhoai_versions_path).readlines()
 
-        self.shipped_rhoai_versions = sorted(list(
-            set([version.split('-')[0].strip('\n').replace('v', '') for version in self.shipped_rhoai_versions if
-                 version.count('.') > 1])))
+        version_pattern = re.compile(r'^v?(\d+\.\d+\.\d+(?:-ea\.\d+)?)')
+        parsed_versions = set()
+        for version in self.shipped_rhoai_versions:
+            version = version.strip()
+            m = version_pattern.match(version)
+            if m:
+                parsed_versions.add(m.group(1))
+        self.shipped_rhoai_versions = sorted(list(parsed_versions))
         print('shipped_rhoai_versions', self.shipped_rhoai_versions)
 
     def parse_catalog_yaml(self, catalog_yaml_path):
