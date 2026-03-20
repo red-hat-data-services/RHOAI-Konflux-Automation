@@ -62,7 +62,7 @@ class catalog_validator:
         def __le__(self, other):
             return self._parsed_tuple <= other._parsed_tuple
 
-    def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation):
+    def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation, global_config_path):
         self.build_config_path = build_config_path
         self.catalog_folder_path = catalog_folder_path
         self.shipped_rhoai_versions_path = shipped_rhoai_versions_path
@@ -72,6 +72,11 @@ class catalog_validator:
         self.build_config = yaml.safe_load(open(self.build_config_path))
         self.supported_ocp_versions = sorted(list(set(self.build_config['config']['supported-ocp-versions']['release'] + [item['name'] for item in self.build_config['config']['supported-ocp-versions']['build']]))) if operation == 'validate-catalogs' \
             else sorted(self.build_config['config']['supported-ocp-versions'], key=lambda x: x['version']) if operation == 'validate-pcc' else None
+
+        self.global_config = yaml.safe_load(open(global_config_path))
+        global_ocp_versions = self.global_config['config']['supported-ocp-versions']
+        self.discontinuity_map = {entry['version']: entry['discontinued-from'] if 'discontinued-from' in entry else 'rhods-operator.9.99.99' for entry in global_ocp_versions}
+        self.onboarding_map = {entry['version']: entry['onboarded-since'] if 'onboarded-since' in entry else 'rhods-operator.0.0.0' for entry in global_ocp_versions}
 
         self.shipped_rhoai_versions = open(self.shipped_rhoai_versions_path).readlines()
 
@@ -94,7 +99,7 @@ class catalog_validator:
     def validate_catalogs(self):
         missing_bundles = {}
         incorrect_3x_bundles = {}
-        # need to get the global config.yaml and process the discontinuity map in order to ignore the unsupported OCP versions like 4.14, same as what was done for pcc validation
+
         for ocp_version in self.supported_ocp_versions:
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{ocp_version}/rhods-operator/catalog.yaml')
             bundles = catalog_dict['olm.bundle']
@@ -113,7 +118,10 @@ class catalog_validator:
                     if is_3x_on_unsupported_ocp:
                         print(f"Skipping the catalog validation for {rhoai_version} bundle for OCP {ocp_version}, since 3.x is not shipped on this OCP version!")
                         continue
-                    missing_bundles[ocp_version].append(operator_name)
+                    if not self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(self.onboarding_map[ocp_version]):
+                        missing_bundles[ocp_version].append(operator_name)
+                    else:
+                        print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
 
                 if operator_name in bundles and is_3x_on_unsupported_ocp:
                     incorrect_3x_bundles[ocp_version].append(operator_name)
@@ -142,8 +150,6 @@ class catalog_validator:
 
     def validate_pcc(self):
         missing_bundles = {}
-        discontinuity_map = {ocp_version['version']:ocp_version['discontinued-from'] if 'discontinued-from' in ocp_version else 'rhods-operator.9.99.99' for ocp_version in self.supported_ocp_versions }
-        onboarding_map = {ocp_version['version']:ocp_version['onboarded-since'] if 'onboarded-since' in ocp_version else 'rhods-operator.0.0.0' for ocp_version in self.supported_ocp_versions }
         pcc_catalog_files = [f'catalog-{ocp_version["version"]}.yaml' for ocp_version in
                                   self.supported_ocp_versions]
 
@@ -164,7 +170,7 @@ class catalog_validator:
 
                 if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
                     if not (is_3x_on_unsupported_ocp):
-                        if not self.rhods_operator(operator_name) >= self.rhods_operator(discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(onboarding_map[ocp_version]):
+                        if not self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(self.onboarding_map[ocp_version]):
                             missing_bundles[pcc_file].append(operator_name)
                         else:
                             print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
@@ -191,13 +197,15 @@ if __name__ == '__main__':
                         help='Path of the catalog.yaml from the main branch.', dest='catalog_folder_path')
     parser.add_argument('-s', '--shipped-rhoai-versions-path', required=False,
                         help='Path of the shipped_rhoai_versions.txt from the main branch.', dest='shipped_rhoai_versions_path')
+    parser.add_argument('-g', '--global-config-path', required=True,
+                        help='Path of the global config.yaml (from main branch) containing discontinuity/onboarding maps.', dest='global_config_path')
     args = parser.parse_args()
 
     if args.operation.lower() == 'validate-catalogs':
-        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation)
+        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation, global_config_path=args.global_config_path)
         validator.validate_catalogs()
     elif args.operation.lower() == 'validate-pcc':
-        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation)
+        validator = catalog_validator(build_config_path=args.build_config_path, catalog_folder_path=args.catalog_folder_path, shipped_rhoai_versions_path=args.shipped_rhoai_versions_path, operation=args.operation, global_config_path=args.global_config_path)
         validator.validate_pcc()
 
 
