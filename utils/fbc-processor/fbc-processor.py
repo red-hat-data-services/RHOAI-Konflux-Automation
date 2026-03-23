@@ -31,7 +31,7 @@ class fbc_processor:
     def parse_catalog_yaml(self):
         # objs = yaml.safe_load_all(open(self.catalog_yaml_path))
         objs = ruyaml.load_all(open(self.catalog_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        print(type(objs))
+        # print(type(objs))
         catalog_dict = defaultdict(dict)
         for obj in objs:
             catalog_dict[obj['schema']][obj['name']] = obj
@@ -59,7 +59,7 @@ class fbc_processor:
                 self.patch_olm_channels()
 
             self.process_push_pipeline()
-
+            self.purge_unused_olm_bundles()
             self.write_output_catalog()
 
     def write_output_catalog(self):
@@ -149,6 +149,18 @@ class fbc_processor:
         for name in to_delete:
             del self.catalog_dict['olm.bundle'][name]
 
+    def purge_unused_olm_bundles(self):
+        channel_objs = self.catalog_dict['olm.channel']
+        referenced_bundles = set()
+        for channel_name, channel_obj in channel_objs.items():
+            for entry in channel_obj['entries']:
+                bundle_name = entry['name']
+                referenced_bundles.add(bundle_name)
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name not in referenced_bundles]
+        self.purge_olm_bundles(to_delete)
+             
+        
+        
     def patch_olm_bundles(self):
         SCHEMA = 'olm.bundle'
         current_bundle_name = self.current_olm_bundle['name']
