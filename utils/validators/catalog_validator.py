@@ -62,6 +62,34 @@ class catalog_validator:
         def __le__(self, other):
             return self._parsed_tuple <= other._parsed_tuple
 
+        def __gt__(self, other):
+            return self._parsed_tuple > other._parsed_tuple
+
+        def __lt__(self, other):
+            return self._parsed_tuple < other._parsed_tuple
+
+        def __getitem__(self, key):
+            return self._parsed_tuple[key]
+
+        def __repr__(self):
+            return self.version
+
+        # given a list of versions, determine if this is the latest ea version for a given (major, minor, patch)
+        def is_latest_ea(self, versions_list):
+            latest = self._parsed_tuple
+            for item in versions_list:
+                try: 
+                    version = self.__class__(item) 
+                except ValueError:
+                    continue
+                else:
+                    if version[0:4] != latest[0:4]:
+                        continue
+                    if version[4:] > latest[4:]:
+                        latest = version
+            print(f"{latest} is the newest version in the vicinity of {self.version}")
+            return latest == self._parsed_tuple
+            
     def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation, global_config_path):
         self.build_config_path = build_config_path
         self.catalog_folder_path = catalog_folder_path
@@ -114,17 +142,28 @@ class catalog_validator:
                     and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30
                 )
 
-                if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
+                if operator_name in bundles:
                     if is_3x_on_unsupported_ocp:
-                        print(f"Skipping the catalog validation for {rhoai_version} bundle for OCP {ocp_version}, since 3.x is not shipped on this OCP version!")
-                        continue
-                    if not self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(self.onboarding_map[ocp_version]):
-                        missing_bundles[ocp_version].append(operator_name)
-                    else:
-                        print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
+                        incorrect_3x_bundles[ocp_version].append(operator_name)
+                    continue
 
-                if operator_name in bundles and is_3x_on_unsupported_ocp:
-                    incorrect_3x_bundles[ocp_version].append(operator_name)
+                if operator_name in self.MISSING_BUNDLE_EXCEPTIONS:
+                    continue
+
+                if is_3x_on_unsupported_ocp:
+                    print(f"Skipping the catalog validation for {rhoai_version} bundle for OCP {ocp_version}, since 3.x is not shipped on this OCP version!")
+                    continue
+
+                if self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) \
+                        or self.rhods_operator(operator_name) < self.rhods_operator(self.onboarding_map[ocp_version]):
+                    print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
+                    continue
+
+                if not self.rhods_operator(operator_name).is_latest_ea(bundles):
+                    print(f'Ignoring missing {operator_name} since it is expected to be overwritten by a newer EA release')
+                    continue
+
+                missing_bundles[ocp_version].append(operator_name)
 
         print('missing_bundles', missing_bundles)
         print('incorrect_3x_bundles', incorrect_3x_bundles)
@@ -167,13 +206,23 @@ class catalog_validator:
                     rhoai_version.startswith('3')
                     and numeric_ocp_version < self.MIN_OCP_VERSION_FOR_RHOAI_30
                 )
+                missing_from_bundle = (operator_name not in bundles)
 
-                if operator_name not in bundles and operator_name not in self.MISSING_BUNDLE_EXCEPTIONS:
-                    if not (is_3x_on_unsupported_ocp):
-                        if not self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) and not self.rhods_operator(operator_name) <= self.rhods_operator(self.onboarding_map[ocp_version]):
-                            missing_bundles[pcc_file].append(operator_name)
-                        else:
-                            print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
+                if operator_name in bundles:
+                    continue
+
+                if operator_name in self.MISSING_BUNDLE_EXCEPTIONS:
+                    continue
+
+                if is_3x_on_unsupported_ocp:  # bypassing check for 3.0 for OCP < 4.19
+                    continue
+
+                if self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) \
+                        or self.rhods_operator(operator_name) < self.rhods_operator(self.onboarding_map[ocp_version]):
+
+                    print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
+                else:
+                    missing_bundles[pcc_file].append(operator_name)
 
 
 
