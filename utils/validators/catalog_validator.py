@@ -68,6 +68,28 @@ class catalog_validator:
         def __lt__(self, other):
             return self._parsed_tuple < other._parsed_tuple
 
+        def __getitem__(self, key):
+            return self._parsed_tuple[key]
+
+        def __repr__(self):
+            return self.version
+
+        # given a list of versions, determine if this is the latest ea version for a given (major, minor, patch)
+        def is_latest_ea(self, versions_list):
+            latest = self._parsed_tuple
+            for item in versions_list:
+                try: 
+                    version = self.__class__(item) 
+                except ValueError:
+                    continue
+                else:
+                    if version[0:4] != latest[0:4]:
+                        continue
+                    if version[4:] > latest[4:]:
+                        latest = version
+            print(f"{latest} is the newest version in the vicinity of {self.version}")
+            return latest == self._parsed_tuple
+            
     def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation, global_config_path):
         self.build_config_path = build_config_path
         self.catalog_folder_path = catalog_folder_path
@@ -134,9 +156,14 @@ class catalog_validator:
 
                 if self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) \
                         or self.rhods_operator(operator_name) < self.rhods_operator(self.onboarding_map[ocp_version]):
-                    print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
-                else:
-                    missing_bundles[ocp_version].append(operator_name)
+                    print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
+                    continue
+
+                if not self.rhods_operator(operator_name).is_latest_ea(bundles):
+                    print(f'Ignoring missing {operator_name} since it is expected to be overwritten by a newer EA release')
+                    continue
+
+                missing_bundles[ocp_version].append(operator_name)
 
         print('missing_bundles', missing_bundles)
         print('incorrect_3x_bundles', incorrect_3x_bundles)
@@ -193,7 +220,7 @@ class catalog_validator:
                 if self.rhods_operator(operator_name) >= self.rhods_operator(self.discontinuity_map[ocp_version]) \
                         or self.rhods_operator(operator_name) < self.rhods_operator(self.onboarding_map[ocp_version]):
 
-                    print(f'Ignoring since OCP {ocp_version} is not supported for {operator_name}')
+                    print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
                 else:
                     missing_bundles[pcc_file].append(operator_name)
 
