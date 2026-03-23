@@ -13,13 +13,14 @@ class fbc_processor:
     # Channel names that are reset from patch (no merge with base catalog).
     RESET_CHANNELS = {'beta'}
 
-    def __init__(self, build_config_path:str, catalog_yaml_path:str, patch_yaml_path:str, single_bundle_path:str, output_file_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
+    def __init__(self, build_config_path:str, catalog_yaml_path:str, patch_yaml_path:str, single_bundle_path:str, output_file_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, purge_bundles:str):
         self.build_config_path = build_config_path
         self.catalog_yaml_path = catalog_yaml_path
         self.patch_yaml_path = patch_yaml_path
         self.single_bundle_path = single_bundle_path
         self.output_file_path = output_file_path
         self.catalog_dict:defaultdict = self.parse_catalog_yaml()
+        self.purge_olm_bundles(purge_bundles.split(","))
         self.patch_dict = self.parse_patch_yaml()
         self.build_config = yaml.safe_load(open(self.build_config_path))
         self.current_olm_bundle = self.parse_single_bundle_catalog()
@@ -142,6 +143,11 @@ class fbc_processor:
                     value = value.replace(f'{intermediate_registry}/{old}@', f'{self.PRODUCTION_REGISTRY}/{new}@')
         return value
 
+
+    def purge_olm_bundles(self, purge_bundles):
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name in purge_bundles]
+        for name in to_delete:
+            del self.catalog_dict['olm.bundle'][name]
 
     def patch_olm_bundles(self):
         SCHEMA = 'olm.bundle'
@@ -276,6 +282,8 @@ if __name__ == '__main__':
                         help='Path of the single-bundle generated using the opm.', dest='single_bundle_path')
     parser.add_argument('-o', '--output-file-path', required=False,
                         help='Path of the output catalog yaml', dest='output_file_path')
+    parser.add_argument('--purge-bundles', required=False, default='',
+                        help='olm.bundles to purge from the catalog yaml', dest='purge_bundles')
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
     parser.add_argument('-f', '--image-filter', required=False,
@@ -294,7 +302,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'catalog-patch':
-        processor = fbc_processor(build_config_path=args.build_config_path, catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, single_bundle_path=args.single_bundle_path, output_file_path=args.output_file_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path)
+        processor = fbc_processor(build_config_path=args.build_config_path, catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, single_bundle_path=args.single_bundle_path, output_file_path=args.output_file_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, purge_bundles=args.purge_bundles)
         processor.patch_catalog_yaml()
     elif args.operation.lower() == 'extract-snapshot-images':
         processor = snapshot_processor(snapshot_json_path=args.snapshot_json_path, output_file_path=args.output_file_path, image_filter=args.image_filter, rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, catalog_build_args_file_path=args.catalog_build_args_file_path, build_type=args.build_type)
