@@ -112,7 +112,8 @@ class stage_promoter:
         entries = [e for e in (channel.get('entries') or []) if e.get('name')]
         ea = [e for e in entries if 'ea' in (e.get('name') or '')]
         if not ea:
-            raise ValueError(f"Channel {channel_name!r} has no EA versions.")
+            print(f"Channel {channel_name!r} has no EA versions, skipping pruning.")
+            return
         # How largest is decided: key = (release, ea_segments). Tuples compared left-to-right (lexicographic).
         # Example keys:
         #   3.4.0-ea.1   -> ((3, 4, 0), (1,))
