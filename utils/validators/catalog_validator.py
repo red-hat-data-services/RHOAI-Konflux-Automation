@@ -68,27 +68,33 @@ class catalog_validator:
         def __lt__(self, other):
             return self._parsed_tuple < other._parsed_tuple
 
+        def __eq__(self, other):
+            return self._parsed_tuple == other._parsed_tuple
+
         def __getitem__(self, key):
             return self._parsed_tuple[key]
 
         def __repr__(self):
             return self.version
 
-        # given a list of versions, determine if this is the latest ea version for a given (major, minor, patch)
+        # given a list of versions, determine if this is the globally latest ea version 
         def is_latest_ea(self, versions_list):
-            latest = self._parsed_tuple
+            latest = self
+
             for item in versions_list:
+                # This try block filters out all the legacy releases that don't match 
+                #  the expected pattern
                 try: 
                     version = self.__class__(item) 
                 except ValueError:
                     continue
                 else:
-                    if version[0:4] != latest[0:4]:
-                        continue
-                    if version[4:] > latest[4:]:
+                    # Check if greater, but skip if GA release
+                    if version >= latest and version[3] == 0:
                         latest = version
-            print(f"{latest} is the newest version in the vicinity of {self.version}")
-            return latest == self._parsed_tuple
+
+            print(f"{latest} is the newest EA release")
+            return latest == self
             
     def __init__(self, build_config_path, catalog_folder_path, shipped_rhoai_versions_path, operation, global_config_path):
         self.build_config_path = build_config_path
