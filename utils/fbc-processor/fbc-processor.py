@@ -184,7 +184,7 @@ class snapshot_processor:
         latest_images = []
 
         qc = quay_controller('opendatahub')
-        registry = registry_entry['registry']
+        registry = 'quay.io'
         # for fbc-processor, we only care about getting labels from these repos
         quay_repos = ["opendatahub/opendatahub-operator-bundle", "opendatahub/opendatahub-operator"]
         for repo_path in quay_repos:
