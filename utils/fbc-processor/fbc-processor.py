@@ -182,28 +182,27 @@ class snapshot_processor:
 
     def get_all_latest_images(self):
         latest_images = []
-        git_labels_meta = {'map': {}}
 
         qc = quay_controller('opendatahub')
-        for registry_entry in self.build_config['config']['replacements']:
-            registry = registry_entry['registry']
-            for repo_path in [repo_path for repo_path in registry_entry['repo_mappings'] if self.image_filter in repo_path]:
-                print(repo_path)
-                repo = '/'.join(repo_path.split('/')[1:])
-                version_tag = f'{self.quay_tag}-nightly' if self.build_type.lower() == 'nightly' else self.quay_tag
-                tags = qc.get_all_tags(repo, version_tag)
-                if not tags:
-                    print(f'no tags found for {repo}')
-                for tag in tags:
-                    sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
-                    signature = qc.get_tag_details(repo, sig_tag)
-                    if signature:
-                        latest_images.append({'name': f'RELATED_IMAGE_{repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
+        registry = registry_entry['registry']
+        # for fbc-processor, we only care about getting labels from these repos
+        quay_repos = ["opendatahub/opendatahub-operator-bundle", "opendatahub/opendatahub-operator"]
+        for repo_path in quay_repos:
+            repo = '/'.join(repo_path.split('/')[1:])
+            version_tag = f'{self.quay_tag}-nightly' if self.build_type.lower() == 'nightly' else self.quay_tag
+            tags = qc.get_all_tags(repo, version_tag)
+            if not tags:
+                print(f'no tags found for {repo}')
+            for tag in tags:
+                sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
+                signature = qc.get_tag_details(repo, sig_tag)
+                if signature:
+                    latest_images.append({'name': f'RELATED_IMAGE_{repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
 
-                        labels = qc.get_git_labels(repo, tag["manifest_digest"])
-                        self.generate_catalog_build_args(labels)
+                    labels = qc.get_git_labels(repo, tag["manifest_digest"])
+                    self.generate_catalog_build_args(labels)
 
-                        break
+                    break
         print('latest_images', json.dumps(latest_images, indent=4))
 
         json.dump(latest_images, indent=4, fp=open(self.output_file_path, 'w'))
