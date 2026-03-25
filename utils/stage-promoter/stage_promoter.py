@@ -15,6 +15,21 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import base64
 import sys
 
+class OpenshiftVersion(tuple):
+    def __new__(cls, version_str):
+        regex = re.match(r'v(\d+)\.(\d+)', version_str)
+        if not regex:
+            regex = re.match(r'(\d+)\.(\d+)', version_str)
+            if not regex:
+                raise ValueError(f"Was not able to parse {version_str}")
+
+        x = regex.group(1)
+        y = regex.group(2)
+
+        return super().__new__(cls, (int(x), int(y)))
+
+    def __init__(self, version_str):
+        self.version = version_str
 
 class stage_promoter:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
@@ -26,6 +41,13 @@ class stage_promoter:
 
     def __init__(self, catalog_yaml_path:str, patch_yaml_path:str, release_catalog_yaml_path:str, output_file_path:str, rhoai_version:str):
         self.catalog_yaml_path = catalog_yaml_path
+
+        # a hack to get the ocp version
+        ocp_regex = re.search(r'catalog-(.*?)\.yaml', catalog_yaml_path)
+        if not ocp_regex:
+            raise ValueError(f"was not able to parse OCP version from catalog path: {catalog_yaml_path}")
+
+        self.ocp_version = ocp_regex.group(1)
         self.patch_yaml_path = patch_yaml_path
         self.release_catalog_yaml_path = release_catalog_yaml_path
         self.output_file_path = output_file_path
@@ -102,8 +124,11 @@ class stage_promoter:
                 # If reset channel or new channel, take full definition from patch.
                 self.catalog_dict[SCHEMA][channel['name']] = channel
 
+        # if ocp v4.19+ is supported, then we expect the beta channel to exist and follow ea drop scheme
+        supports_ea_drops = OpenshiftVersion(self.ocp_version) >= OpenshiftVersion('v4.19')
+
         # Keep only the latest EA drop in the beta channel to support fresh install only.
-        if 'beta' in self.catalog_dict[SCHEMA]:
+        if 'beta' in self.catalog_dict[SCHEMA] and supports_ea_drops:
             self.prune_channel_to_latest_ea(SCHEMA, 'beta')
 
     # updates a given OLM channel so that only the latest Early Access (EA) version remains in entries.
