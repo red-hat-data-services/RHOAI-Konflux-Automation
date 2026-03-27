@@ -441,7 +441,7 @@ def write_yaml_file_rt(data: Dict, file_path: str,
     LOGGER.info(f"  Writing YAML file (round-trip): {file_path}")
     yaml_instance = YAML()
     yaml_instance.preserve_quotes = True
-    yaml_instance.representer.ignore_aliases = lambda self, data: True
+    yaml_instance.representer.ignore_aliases = lambda data: True
     yaml_instance.indent(mapping=indent_mapping, sequence=indent_sequence, offset=indent_offset)
     with open(file_path, 'w') as f:
         yaml_instance.dump(data, f)
