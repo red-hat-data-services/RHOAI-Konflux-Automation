@@ -7,6 +7,7 @@ import json
 from typing import List, Dict, Tuple, Optional
 import yaml
 import ruamel.yaml as ruyaml
+from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import requests
 
@@ -398,6 +399,52 @@ def write_yaml_file(data: Dict, file_path: str) -> None:
     LOGGER.info(f"  Writing YAML file: {file_path}")
     with open(file_path, 'w') as f:
         ruyaml.dump(data, f, Dumper=ruyaml.RoundTripDumper, default_flow_style=False)
+
+
+# Round-trip YAML functions using the newer ruamel.yaml YAML() API.
+# The existing load_yaml_file / write_yaml_file use the legacy RoundTripLoader / RoundTripDumper
+# which work well for bundle processing but drop comments, blank lines, and alter list indentation.
+# Rather than modifying the existing functions and risking regressions in the bundle processor,
+# these _rt variants were created for newer use cases (e.g. Helm charts).
+
+def load_yaml_file_rt(file_path: str) -> Dict:
+    """
+    Load a YAML file with full round-trip preservation (comments, blank lines, indentation).
+
+    Args:
+        file_path: The path to the YAML file to load
+
+    Returns:
+        The parsed YAML content as a dictionary (CommentedMap)
+    """
+    LOGGER.info(f"  Parsing yaml file (round-trip): {file_path}")
+    yaml_instance = YAML()
+    yaml_instance.preserve_quotes = True
+    with open(file_path, 'r') as f:
+        return yaml_instance.load(f)
+
+
+def write_yaml_file_rt(data: Dict, file_path: str,
+                        indent_mapping: int = 2,
+                        indent_sequence: int = 4,
+                        indent_offset: int = 2) -> None:
+    """
+    Write a dictionary to a YAML file with full round-trip preservation.
+
+    Args:
+        data: The dictionary to write to the YAML file
+        file_path: The path to the output file
+        indent_mapping: Spaces per mapping indent level (default: 2)
+        indent_sequence: Spaces per sequence indent level (default: 4)
+        indent_offset: Offset of the sequence dash within the indent (default: 2)
+    """
+    LOGGER.info(f"  Writing YAML file (round-trip): {file_path}")
+    yaml_instance = YAML()
+    yaml_instance.preserve_quotes = True
+    yaml_instance.representer.ignore_aliases = lambda self, data: True
+    yaml_instance.indent(mapping=indent_mapping, sequence=indent_sequence, offset=indent_offset)
+    with open(file_path, 'w') as f:
+        yaml_instance.dump(data, f)
 
 
 def write_file(content: str, file_path: str) -> None:
