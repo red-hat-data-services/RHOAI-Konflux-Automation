@@ -17,7 +17,7 @@ LOGGER = getLogger('processor')
 
 class bundle_processor:
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, helm_patch_yaml_path:str=None, helm_values_yaml_path:str=None, helm_push_pipeline_yaml_path:str=None):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Bundle Processor")
         LOGGER.info("=============================================================================")
@@ -31,6 +31,9 @@ class bundle_processor:
         self.annotation_yaml_path = annotation_yaml_path
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
         self.build_args_file_path = f'{Path(self.patch_yaml_path).parent}/bundle_build_args.map'
+        self.helm_patch_yaml_path = helm_patch_yaml_path
+        self.helm_values_yaml_path = helm_values_yaml_path
+        self.helm_push_pipeline_yaml_path = helm_push_pipeline_yaml_path
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -42,6 +45,12 @@ class bundle_processor:
         LOGGER.info(f"annotation_yaml_path: {self.annotation_yaml_path}")
         LOGGER.info(f"push_pipeline_yaml_path: {self.push_pipeline_yaml_path}")
         LOGGER.info(f"build_args_file_path: {self.build_args_file_path}")
+        if self.helm_patch_yaml_path:
+            LOGGER.info(f"helm_patch_yaml_path: {self.helm_patch_yaml_path}")
+        if self.helm_values_yaml_path:
+            LOGGER.info(f"helm_values_yaml_path: {self.helm_values_yaml_path}")
+        if self.helm_push_pipeline_yaml_path:
+            LOGGER.info(f"helm_push_pipeline_yaml_path: {self.helm_push_pipeline_yaml_path}")
 
         LOGGER.info("")
         LOGGER.info("Loading yaml files...")
@@ -51,11 +60,24 @@ class bundle_processor:
         self.annotation_dict = util.load_yaml_file(self.annotation_yaml_path, parser='pyyaml')
         self.push_pipeline_dict = util.load_yaml_file(self.push_pipeline_yaml_path)
 
+        if self.helm_patch_yaml_path:
+            self.helm_patch_dict = util.load_yaml_file_rt(self.helm_patch_yaml_path)
+        if self.helm_values_yaml_path:
+            self.helm_values_dict = util.load_yaml_file_rt(self.helm_values_yaml_path)
+        if self.helm_push_pipeline_yaml_path:
+            self.helm_push_pipeline_dict = util.load_yaml_file(self.helm_push_pipeline_yaml_path)
+
         LOGGER.debug(f"csv_dict: {json.dumps(self.csv_dict, indent=4, default=str)}")
         LOGGER.debug(f"patch_dict: {json.dumps(self.patch_dict, indent=4, default=str)}")
         LOGGER.debug(f"build_config_dict: {json.dumps(self.build_config_dict, indent=4, default=str)}")
         LOGGER.debug(f"annotation_dict: {json.dumps(self.annotation_dict, indent=4, default=str)}")
         LOGGER.debug(f"push_pipeline_dict: {json.dumps(self.push_pipeline_dict, indent=4, default=str)}")
+        if self.helm_patch_yaml_path:
+            LOGGER.debug(f"helm_patch_dict: {json.dumps(self.helm_patch_dict, indent=4, default=str)}")
+        if self.helm_values_yaml_path:
+            LOGGER.debug(f"helm_values_dict: {json.dumps(self.helm_values_dict, indent=4, default=str)}")
+        if self.helm_push_pipeline_yaml_path:
+            LOGGER.debug(f"helm_push_pipeline_dict: {json.dumps(self.helm_push_pipeline_dict, indent=4, default=str)}")
         LOGGER.info("All yaml files loaded successfully!")
 
     def process(self):
@@ -110,13 +132,29 @@ class bundle_processor:
         LOGGER.info("=============================================================================")
         self.patch_annotations_yaml()
 
+        if self.helm_patch_yaml_path and self.helm_values_yaml_path:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Processing Helm Charts...")
+            LOGGER.info("=============================================================================")
+            self.patch_helm_charts()
+
         LOGGER.info("")
         LOGGER.info("=============================================================================")
-        LOGGER.info("Processing push pipeline...")
+        LOGGER.info("Processing push pipelines...")
         LOGGER.info("=============================================================================")
         self.is_push_pipeline_updated, self.push_pipeline_dict = util.process_push_pipeline(
             self.push_pipeline_dict, self.push_pipeline_operation
         )
+
+        if self.helm_push_pipeline_yaml_path:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Processing helm push pipeline...")
+            LOGGER.info("=============================================================================")
+            self.is_helm_push_pipeline_updated, self.helm_push_pipeline_dict = util.process_push_pipeline(
+                self.helm_push_pipeline_dict, self.push_pipeline_operation
+            )
 
         LOGGER.info("")
         LOGGER.info("=============================================================================")
@@ -281,19 +319,19 @@ class bundle_processor:
         LOGGER.info("  CSV patches applied successfully!")
 
         # Prepare env and related images list
-        env_vars, related_images = self.prepare_env_and_related_images()
+        self.env_vars, self.related_images = self.prepare_env_and_related_images()
 
         LOGGER.info("")
         LOGGER.info("Updating deployment env vars...")
-        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env'] = env_vars
+        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env'] = self.env_vars
         LOGGER.info("  Deployment env vars updated successfully!")
 
         # Set spec.relatedImages for OLM disconnected support
         LOGGER.info("")
         LOGGER.info("Updating spec.relatedImages list...")
-        self.csv_dict['spec']['relatedImages'] = related_images
+        self.csv_dict['spec']['relatedImages'] = self.related_images
         LOGGER.info("  spec.relatedImages updated successfully!")
-        LOGGER.debug(f"  Updated relatedImages: {json.dumps(related_images, indent=4, default=str)}")
+        LOGGER.debug(f"  Updated relatedImages: {json.dumps(self.related_images, indent=4, default=str)}")
 
     def prepare_env_and_related_images(self):
         """
@@ -389,6 +427,58 @@ class bundle_processor:
         
         return final_env_vars, relatedImages
 
+    def patch_helm_charts(self):
+        """
+        Updates values-patch.yaml with resolved operator image and related image digests,
+        then applies the updated patch to the helm chart values.yaml.
+
+        Steps:
+            1. Update values-patch.yaml: replace operator image references and relatedImages
+               values with fully resolved digests, then write the updated patch file.
+            2. Apply the updated patch to values.yaml: set operator image, relatedImages
+               (preserved as list format), and cloud-specific images.
+        """
+        LOGGER.info("Step 1: Updating values-patch.yaml with resolved digests")
+        LOGGER.info("")
+        LOGGER.info("Updating operator image in values-patch...")
+        for section in ['rhaiOperator', 'azure', 'coreweave']:
+            if section in self.helm_patch_dict and 'image' in self.helm_patch_dict[section]:
+                self.helm_patch_dict[section]['image'] = DoubleQuotedScalarString(self.operator_image)
+                LOGGER.info(f"  {section}.image -> {self.operator_image}")
+
+        LOGGER.info("")
+        LOGGER.info("Updating relatedImages in values-patch with resolved digests...")
+        env_vars_map = {
+            str(entry['name']): str(entry['value'])
+            for entry in self.env_vars
+            if str(entry.get('name', '')).startswith('RELATED_IMAGE_')
+        }
+
+        helm_related_images = self.helm_patch_dict.get('rhaiOperator', {}).get('relatedImages', [])
+        for related_image in helm_related_images:
+            name = str(related_image['name'])
+            if name in env_vars_map:
+                old_value = related_image['value']
+                related_image['value'] = DoubleQuotedScalarString(env_vars_map[name])
+                LOGGER.info(f"  {name}: {old_value} -> {env_vars_map[name]}")
+            else:
+                LOGGER.warning(f"  No matching env var found for: {name}")
+
+        LOGGER.info("")
+        LOGGER.info("Step 2: Applying updated values-patch to values.yaml")
+        LOGGER.info("")
+        LOGGER.info("Updating rhaiOperator fields...")
+        self.helm_values_dict['rhaiOperator']['image'] = DoubleQuotedScalarString(self.operator_image)
+        self.helm_values_dict['rhaiOperator']['relatedImages'] = helm_related_images
+        LOGGER.info("  rhaiOperator.image updated")
+        LOGGER.info(f"  rhaiOperator.relatedImages updated with {len(helm_related_images)} entries")
+
+        for section in ['azure', 'coreweave']:
+            if section in self.helm_patch_dict and 'image' in self.helm_patch_dict[section]:
+                if section in self.helm_values_dict and 'cloudManager' in self.helm_values_dict[section]:
+                    self.helm_values_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
+                    LOGGER.info(f"  {section}.cloudManager.image updated")
+
     def patch_annotations_yaml(self):
         """
         Processes annotation.yaml by removing channel-related annotations.
@@ -418,6 +508,13 @@ class bundle_processor:
 
         if self.is_push_pipeline_updated:
             util.write_yaml_file(self.push_pipeline_dict, self.push_pipeline_yaml_path)
+
+        if self.helm_patch_yaml_path and self.helm_values_yaml_path:
+            util.write_yaml_file_rt(self.helm_patch_dict, self.helm_patch_yaml_path)
+            util.write_yaml_file_rt(self.helm_values_dict, self.helm_values_yaml_path)
+
+        if self.helm_push_pipeline_yaml_path and self.is_helm_push_pipeline_updated:
+            util.write_yaml_file(self.helm_push_pipeline_dict, self.helm_push_pipeline_yaml_path)
 
         LOGGER.info("  Output files written successfully!")
 
@@ -459,6 +556,12 @@ if __name__ == '__main__':
                         help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
+    parser.add_argument('-hp', '--helm-patch-yaml-path', required=False,
+                        help='Path of the helm values-patch.yaml', dest='helm_patch_yaml_path')
+    parser.add_argument('-hv', '--helm-values-yaml-path', required=False,
+                        help='Path of the helm chart values.yaml to be patched', dest='helm_values_yaml_path')
+    parser.add_argument('-hpp', '--helm-push-pipeline-yaml-path', required=False,
+                        help='Path of the helm tekton push pipeline', dest='helm_push_pipeline_yaml_path')
     # For POC purposes: snapshot_processor arguments
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
@@ -467,7 +570,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, helm_patch_yaml_path=args.helm_patch_yaml_path, helm_values_yaml_path=args.helm_values_yaml_path, helm_push_pipeline_yaml_path=args.helm_push_pipeline_yaml_path)
         processor.process()
 
     # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'
