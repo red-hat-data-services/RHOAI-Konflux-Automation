@@ -39,7 +39,7 @@ class stage_promoter:
     # Version after PACKAGE_NAME.: X.Y.Z-ea.N or X.Y.Z-ea.N.H (H optional). X=0-9, Y/Z=0-99.
     EA_VERSION_PATTERN = re.compile(r"^[0-9]\.[0-9]{1,2}\.[0-9]{1,2}-ea\.[0-9]+(\.[0-9]+)?$")
 
-    def __init__(self, catalog_yaml_path:str, patch_yaml_path:str, release_catalog_yaml_path:str, output_file_path:str, rhoai_version:str, ocp_version:str):
+    def __init__(self, catalog_yaml_path:str, patch_yaml_path:str, release_catalog_yaml_path:str, output_file_path:str, rhoai_version:str, ocp_version:str, purge_bundles:str):
         self.catalog_yaml_path = catalog_yaml_path
 
         if ocp_version:
@@ -51,11 +51,13 @@ class stage_promoter:
                 raise ValueError(f"was not able to parse OCP version from release catalog path: {release_catalog_yaml_path}")
 
             self.ocp_version = ocp_regex.group(1)
-        
+
         self.patch_yaml_path = patch_yaml_path
         self.release_catalog_yaml_path = release_catalog_yaml_path
         self.output_file_path = output_file_path
         self.catalog_dict:defaultdict = self.parse_catalog_yaml()
+        if purge_bundles:
+            self.purge_olm_bundles(purge_bundles.split(","))
         self.patch_dict = self.parse_patch_yaml()
         self.rhoai_version = rhoai_version
         self.current_bundle_name = f'{self.PACKAGE_NAME}.{self.rhoai_version.lower().strip("v")}'
@@ -101,7 +103,23 @@ class stage_promoter:
             if 'olm.channels' in self.patch_dict['patch']:
                 self.patch_olm_channels()
 
+            self.purge_unused_olm_bundles()
             self.write_output_catalog()
+
+    def purge_olm_bundles(self, purge_bundles):
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name in purge_bundles]
+        for name in to_delete:
+            del self.catalog_dict['olm.bundle'][name]
+
+    def purge_unused_olm_bundles(self):
+        channel_objs = self.catalog_dict['olm.channel']
+        referenced_bundles = set()
+        for channel_name, channel_obj in channel_objs.items():
+            for entry in channel_obj['entries']:
+                bundle_name = entry['name']
+                referenced_bundles.add(bundle_name)
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name not in referenced_bundles]
+        self.purge_olm_bundles(to_delete)
 
     def write_output_catalog(self):
         docs = [doc for schema, schema_val in self.catalog_dict.items() for name, doc in schema_val.items()]
@@ -470,6 +488,8 @@ if __name__ == '__main__':
                         help='Path of the catalog.yaml from the main branch.', dest='catalog_yaml_path')
     parser.add_argument('-p', '--patch-yaml-path', required=False,
                         help='Path of the catalog-patch.yaml from the release branch.', dest='patch_yaml_path')
+    parser.add_argument('--purge-bundles', required=False, default='',
+                        help='olm.bundles to purge from the catalog yaml', dest='purge_bundles')
     parser.add_argument('-r', '--release-catalog-yaml-path', required=False,
                         help='Path of the catalog.yaml from the release branch', dest='release_catalog_yaml_path')
     parser.add_argument('-o', '--output-file-path', required=False,
@@ -493,7 +513,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'stage-catalog-patch':
-        promoter = stage_promoter(catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, release_catalog_yaml_path=args.release_catalog_yaml_path, output_file_path=args.output_file_path, rhoai_version=args.rhoai_version, ocp_version=args.ocp_version)
+        promoter = stage_promoter(catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, release_catalog_yaml_path=args.release_catalog_yaml_path, output_file_path=args.output_file_path, rhoai_version=args.rhoai_version, ocp_version=args.ocp_version, purge_bundles=args.purge_bundles)
         promoter.patch_catalog_yaml()
     elif args.operation.lower() == 'monitor-fbc-builds':
         processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit, pipelineruns=args.pipelineruns, pipeline_type=args.pipeline_type, failed_pipelines_info_path=args.failed_pipelines_info_path)
