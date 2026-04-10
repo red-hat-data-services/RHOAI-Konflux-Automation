@@ -531,6 +531,16 @@ class bundle_processor:
                 LOGGER.warning(f"  No matching env var found for: {name}")
 
         LOGGER.info("")
+        LOGGER.info("Updating hooks.postInstallCrs.image in values-patch...")
+        ose_cli_image_key = 'RELATED_IMAGE_OSE_CLI_IMAGE'
+        if ose_cli_image_key in env_vars_map:
+            old_value = self.xks_helm_patch_dict.get('hooks', {}).get('postInstallCrs', {}).get('image', '')
+            self.xks_helm_patch_dict['hooks']['postInstallCrs']['image'] = DoubleQuotedScalarString(env_vars_map[ose_cli_image_key])
+            LOGGER.info(f"  hooks.postInstallCrs.image: {old_value} -> {env_vars_map[ose_cli_image_key]}")
+        else:
+            LOGGER.warning(f"  {ose_cli_image_key} not found in env vars, skipping hooks.postInstallCrs.image update")
+
+        LOGGER.info("")
         LOGGER.info("Step 2: Applying updated values-patch to XKS values.yaml")
         LOGGER.info("")
         LOGGER.info("Updating rhaiOperator fields...")
