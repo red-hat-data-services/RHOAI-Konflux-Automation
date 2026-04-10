@@ -37,6 +37,8 @@ class bundle_processor:
         self.openshift_helm_patch_yaml_path = openshift_helm_patch_yaml_path
         self.openshift_helm_values_yaml_path = openshift_helm_values_yaml_path
         self.openshift_helm_push_pipeline_yaml_path = openshift_helm_push_pipeline_yaml_path
+        self.xks_helm_chart_yaml_path = str(Path(xks_helm_values_yaml_path).parent / 'Chart.yaml') if xks_helm_values_yaml_path else None
+        self.openshift_helm_chart_yaml_path = str(Path(openshift_helm_values_yaml_path).parent / 'Chart.yaml') if openshift_helm_values_yaml_path else None
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -60,6 +62,10 @@ class bundle_processor:
             LOGGER.info(f"openshift_helm_values_yaml_path: {self.openshift_helm_values_yaml_path}")
         if self.openshift_helm_push_pipeline_yaml_path:
             LOGGER.info(f"openshift_helm_push_pipeline_yaml_path: {self.openshift_helm_push_pipeline_yaml_path}")
+        if self.xks_helm_chart_yaml_path:
+            LOGGER.info(f"xks_helm_chart_yaml_path: {self.xks_helm_chart_yaml_path}")
+        if self.openshift_helm_chart_yaml_path:
+            LOGGER.info(f"openshift_helm_chart_yaml_path: {self.openshift_helm_chart_yaml_path}")
 
         LOGGER.info("")
         LOGGER.info("Loading yaml files...")
@@ -81,6 +87,10 @@ class bundle_processor:
             self.openshift_helm_values_dict = util.load_yaml_file_rt(self.openshift_helm_values_yaml_path)
         if self.openshift_helm_push_pipeline_yaml_path:
             self.openshift_helm_push_pipeline_dict = util.load_yaml_file(self.openshift_helm_push_pipeline_yaml_path)
+        if self.xks_helm_chart_yaml_path:
+            self.xks_helm_chart_dict = util.load_yaml_file_rt(self.xks_helm_chart_yaml_path)
+        if self.openshift_helm_chart_yaml_path:
+            self.openshift_helm_chart_dict = util.load_yaml_file_rt(self.openshift_helm_chart_yaml_path)
 
         LOGGER.debug(f"csv_dict: {json.dumps(self.csv_dict, indent=4, default=str)}")
         LOGGER.debug(f"patch_dict: {json.dumps(self.patch_dict, indent=4, default=str)}")
@@ -99,6 +109,10 @@ class bundle_processor:
             LOGGER.debug(f"openshift_helm_values_dict: {json.dumps(self.openshift_helm_values_dict, indent=4, default=str)}")
         if self.openshift_helm_push_pipeline_yaml_path:
             LOGGER.debug(f"openshift_helm_push_pipeline_dict: {json.dumps(self.openshift_helm_push_pipeline_dict, indent=4, default=str)}")
+        if self.xks_helm_chart_yaml_path:
+            LOGGER.debug(f"xks_helm_chart_dict: {json.dumps(self.xks_helm_chart_dict, indent=4, default=str)}")
+        if self.openshift_helm_chart_yaml_path:
+            LOGGER.debug(f"openshift_helm_chart_dict: {json.dumps(self.openshift_helm_chart_dict, indent=4, default=str)}")
         LOGGER.info("All yaml files loaded successfully!")
 
     def process(self):
@@ -531,6 +545,15 @@ class bundle_processor:
                     self.xks_helm_values_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
                     LOGGER.info(f"  {section}.cloudManager.image updated")
 
+        if self.xks_helm_chart_yaml_path:
+            LOGGER.info("")
+            LOGGER.info("Updating XKS Chart.yaml version fields...")
+            patch_version = str(self.patch_dict['patch']['version'])
+            self.xks_helm_chart_dict['version'] = patch_version
+            self.xks_helm_chart_dict['appVersion'] = patch_version
+            LOGGER.info(f"  version -> {patch_version}")
+            LOGGER.info(f"  appVersion -> {patch_version}")
+
     def patch_openshift_helm_chart(self):
         """
         Updates openshift-values-patch.yaml with the computed OLM channel,
@@ -550,6 +573,15 @@ class bundle_processor:
             self.openshift_helm_values_dict, self.openshift_helm_patch_dict
         )
         LOGGER.info("  OpenShift values.yaml patched successfully!")
+
+        if self.openshift_helm_chart_yaml_path:
+            LOGGER.info("")
+            LOGGER.info("Updating OpenShift Chart.yaml version fields...")
+            patch_version = str(self.patch_dict['patch']['version'])
+            self.openshift_helm_chart_dict['version'] = patch_version
+            self.openshift_helm_chart_dict['appVersion'] = patch_version
+            LOGGER.info(f"  version -> {patch_version}")
+            LOGGER.info(f"  appVersion -> {patch_version}")
 
     def patch_annotations_yaml(self):
         """
@@ -584,6 +616,8 @@ class bundle_processor:
         if self.xks_helm_patch_yaml_path and self.xks_helm_values_yaml_path:
             util.write_yaml_file_rt(self.xks_helm_patch_dict, self.xks_helm_patch_yaml_path)
             util.write_yaml_file_rt(self.xks_helm_values_dict, self.xks_helm_values_yaml_path)
+        if self.xks_helm_chart_yaml_path:
+            util.write_yaml_file_rt(self.xks_helm_chart_dict, self.xks_helm_chart_yaml_path)
 
         if self.xks_helm_push_pipeline_yaml_path and self.is_xks_helm_push_pipeline_updated:
             util.write_yaml_file(self.xks_helm_push_pipeline_dict, self.xks_helm_push_pipeline_yaml_path)
@@ -591,6 +625,8 @@ class bundle_processor:
         if self.openshift_helm_patch_yaml_path and self.openshift_helm_values_yaml_path:
             util.write_yaml_file_rt(self.openshift_helm_patch_dict, self.openshift_helm_patch_yaml_path)
             util.write_yaml_file_rt(self.openshift_helm_values_dict, self.openshift_helm_values_yaml_path)
+        if self.openshift_helm_chart_yaml_path:
+            util.write_yaml_file_rt(self.openshift_helm_chart_dict, self.openshift_helm_chart_yaml_path)
 
         if self.openshift_helm_push_pipeline_yaml_path and self.is_openshift_helm_push_pipeline_updated:
             util.write_yaml_file(self.openshift_helm_push_pipeline_dict, self.openshift_helm_push_pipeline_yaml_path)
