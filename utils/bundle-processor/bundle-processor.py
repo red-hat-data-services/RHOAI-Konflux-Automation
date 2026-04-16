@@ -70,6 +70,8 @@ class bundle_processor:
             self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
             self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
                 'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
+            self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['initContainers'][0][
+                'image'] = DoubleQuotedScalarString(ODH_OPERATOR_IMAGE[0])
 
             self.ODH_OPERATOR_IMAGE_SHA = ODH_OPERATOR_IMAGE[0].split(":")[1]
             self.OPENDATAHUB_OPERATOR_IMAGE = ODH_OPERATOR_IMAGE[0]
