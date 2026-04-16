@@ -335,7 +335,9 @@ class bundle_processor:
         self.csv_dict['metadata']['annotations']['containerImage'] = DoubleQuotedScalarString(self.operator_image)
         self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0][
             'image'] = DoubleQuotedScalarString(self.operator_image)
-        self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['initContainers'][0][
+
+        if 'initContainers' in self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']:
+            self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['initContainers'][0][
             'image'] = DoubleQuotedScalarString(self.operator_image)
 
         LOGGER.info(f"  containerImage: {self.operator_image}")
