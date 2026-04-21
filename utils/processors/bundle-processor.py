@@ -558,6 +558,11 @@ class bundle_processor:
         LOGGER.info("  rhaiOperator.image updated")
         LOGGER.info(f"  rhaiOperator.relatedImages updated with {len(helm_related_images)} entries")
 
+        if 'hooks' in self.xks_helm_patch_dict and 'cliImage' in self.xks_helm_patch_dict['hooks']:
+            if 'hooks' in self.xks_helm_values_dict:
+                self.xks_helm_values_dict['hooks']['cliImage'] = self.xks_helm_patch_dict['hooks']['cliImage']
+                LOGGER.info("  hooks.cliImage updated")
+
         for section in ['azure', 'coreweave']:
             cloud_mgr_patch = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
             if 'image' in cloud_mgr_patch:
