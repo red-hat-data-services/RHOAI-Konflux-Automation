@@ -512,10 +512,14 @@ class bundle_processor:
         LOGGER.info("Step 1: Updating xks-values-patch.yaml with resolved digests")
         LOGGER.info("")
         LOGGER.info("Updating operator image in values-patch...")
-        for section in ['rhaiOperator', 'azure', 'coreweave']:
-            if section in self.xks_helm_patch_dict and 'image' in self.xks_helm_patch_dict[section]:
-                self.xks_helm_patch_dict[section]['image'] = DoubleQuotedScalarString(self.operator_image)
-                LOGGER.info(f"  {section}.image -> {self.operator_image}")
+        if 'rhaiOperator' in self.xks_helm_patch_dict and 'image' in self.xks_helm_patch_dict['rhaiOperator']:
+            self.xks_helm_patch_dict['rhaiOperator']['image'] = DoubleQuotedScalarString(self.operator_image)
+            LOGGER.info(f"  rhaiOperator.image -> {self.operator_image}")
+        for section in ['azure', 'coreweave']:
+            cloud_mgr = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
+            if 'image' in cloud_mgr:
+                self.xks_helm_patch_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
+                LOGGER.info(f"  {section}.cloudManager.image -> {self.operator_image}")
 
         LOGGER.info("")
         LOGGER.info("Updating relatedImages in values-patch with resolved digests...")
@@ -536,14 +540,14 @@ class bundle_processor:
                 LOGGER.warning(f"  No matching env var found for: {name}")
 
         LOGGER.info("")
-        LOGGER.info("Updating hooks.postInstallCrs.image in values-patch...")
+        LOGGER.info("Updating hooks.cliImage in values-patch...")
         ose_cli_image_key = 'RELATED_IMAGE_OSE_CLI_IMAGE'
         if ose_cli_image_key in env_vars_map:
-            old_value = self.xks_helm_patch_dict.get('hooks', {}).get('postInstallCrs', {}).get('image', '')
-            self.xks_helm_patch_dict['hooks']['postInstallCrs']['image'] = DoubleQuotedScalarString(env_vars_map[ose_cli_image_key])
-            LOGGER.info(f"  hooks.postInstallCrs.image: {old_value} -> {env_vars_map[ose_cli_image_key]}")
+            old_value = self.xks_helm_patch_dict.get('hooks', {}).get('cliImage', '')
+            self.xks_helm_patch_dict['hooks']['cliImage'] = DoubleQuotedScalarString(env_vars_map[ose_cli_image_key])
+            LOGGER.info(f"  hooks.cliImage: {old_value} -> {env_vars_map[ose_cli_image_key]}")
         else:
-            LOGGER.warning(f"  {ose_cli_image_key} not found in env vars, skipping hooks.postInstallCrs.image update")
+            LOGGER.warning(f"  {ose_cli_image_key} not found in env vars, skipping hooks.cliImage update")
 
         LOGGER.info("")
         LOGGER.info("Step 2: Applying updated values-patch to XKS values.yaml")
@@ -555,7 +559,8 @@ class bundle_processor:
         LOGGER.info(f"  rhaiOperator.relatedImages updated with {len(helm_related_images)} entries")
 
         for section in ['azure', 'coreweave']:
-            if section in self.xks_helm_patch_dict and 'image' in self.xks_helm_patch_dict[section]:
+            cloud_mgr_patch = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
+            if 'image' in cloud_mgr_patch:
                 if section in self.xks_helm_values_dict and 'cloudManager' in self.xks_helm_values_dict[section]:
                     self.xks_helm_values_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
                     LOGGER.info(f"  {section}.cloudManager.image updated")
