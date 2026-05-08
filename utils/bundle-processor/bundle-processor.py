@@ -1,3 +1,20 @@
+#!/usr/bin/env python3
+# BUNDLE-PROCESSOR-V2.PY
+#
+# Complete implementation of bundle-processor.py with SNAPSHOT support
+# Based on: RHOAI-Konflux-Automation/utils/bundle-processor/bundle-processor.py
+#
+# KEY CHANGES FROM ORIGINAL:
+# - Line 22: Added snapshot_json_path parameter to __init__
+# - Line 26: Uncommented self.snapshot_json_path = snapshot_json_path
+# - Line 319+: Added apply_snapshot_overrides_to_images() method
+# - Line 137: Call snapshot override in get_latest_images_from_operands_map()
+# - Line 448: Updated CLI handler to pass snapshot_json_path parameter
+#
+# SOURCE: https://github.com/red-hat-data-services/RHOAI-Konflux-Automation
+# DATE: 2026-05-08
+# VERSION: V2 with SNAPSHOT support
+
 import sys
 import re
 from datetime import datetime
@@ -19,11 +36,11 @@ class bundle_processor:
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, quay_tag:str, release_branch:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, snapshot_json_path:str, rhoai_version:str, quay_tag:str, release_branch:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str):
         self.build_config_path = build_config_path
         self.bundle_csv_path = bundle_csv_path
         self.patch_yaml_path = patch_yaml_path
-        # self.snapshot_json_path = snapshot_json_path
+        self.snapshot_json_path = snapshot_json_path
         self.output_file_path = output_file_path
         self.csv_dict = self.parse_csv_yaml()
         self.patch_dict = self.parse_patch_yaml()
@@ -106,13 +123,13 @@ class bundle_processor:
         git_commit = self.git_labels_meta["map"][operator_name][self.GIT_COMMIT_LABEL_KEY]
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_URL_LABEL_KEY.replace(".", "_").upper()}={git_url}\n'
         self.git_meta += f'{operator_name.replace("-", "_").upper()}_{self.GIT_COMMIT_LABEL_KEY.replace(".", "_").upper()}={git_commit}\n'
-        
+
 
         # add the image as a build arg in order to make tracer be able to query odh-build-metadata easily
         self.git_meta += f"OPENDATAHUB_OPERATOR_IMAGE={self.OPENDATAHUB_OPERATOR_IMAGE}\n"
         self.git_meta += f"BUILD_METADATA_URL={metadata_url}\n"
 
-        
+
         response = requests.get(raw_operands_map_url)
         response.raise_for_status()
         operands_map = response.text
@@ -130,11 +147,14 @@ class bundle_processor:
 
         self.generate_bundle_build_args()
 
+        # Apply snapshot overrides if snapshot file is provided
+        images = self.apply_snapshot_overrides_to_images(images)
+
         return images
 
 
     def generate_bundle_build_args(self):
-       
+
         with open(self.build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
@@ -317,6 +337,94 @@ class bundle_processor:
             print('latest_images', json.dumps(latest_images, indent=4))
         return latest_images, git_labels_meta
 
+    def apply_snapshot_overrides_to_images(self, images):
+        """
+        Override component images from odh-build-metadata with PR builds from Konflux snapshot.
+
+        This method parses the Konflux snapshot JSON and overrides any matching component images
+        in the images list. The snapshot contains PR-specific builds for components being tested.
+
+        Snapshot format (Konflux):
+        {
+          "component-name": {
+            "image": "quay.io/org/repo@sha256:...",
+            "git.url": "https://github.com/...",
+            "git.commit": "abc123..."
+          },
+          ...
+        }
+
+        Args:
+            images: List of image dicts from odh-build-metadata with format:
+                    [{'name': 'RELATED_IMAGE_FOO_IMAGE', 'value': 'quay.io/...@sha256:...'}, ...]
+
+        Returns:
+            images: Same list with snapshot overrides applied
+        """
+        if not self.snapshot_json_path or not os.path.exists(self.snapshot_json_path):
+            print("No snapshot file provided or file does not exist, skipping snapshot overrides")
+            return images
+
+        print(f"Loading snapshot from: {self.snapshot_json_path}")
+        snapshot = json.load(open(self.snapshot_json_path))
+
+        # Build a map of repo URL -> snapshot image
+        # This allows us to match odh-build-metadata images (which have repo in the URL)
+        # with snapshot components (which also have git.url)
+        snapshot_repo_map = {}
+        for comp_name, comp_data in snapshot.items():
+            if not isinstance(comp_data, dict) or "image" not in comp_data:
+                continue
+
+            # Skip operator/bundle/fbc components (these are handled separately)
+            if any(skip in comp_name.lower() for skip in ['bundle', 'fbc', 'odh-operator-ci']):
+                continue
+
+            # Get the repo URL from snapshot component
+            if 'git.url' in comp_data:
+                git_url = comp_data['git.url']
+                # Normalize git URL (remove .git suffix if present)
+                git_url = git_url.rstrip('.git')
+                snapshot_repo_map[git_url] = {
+                    'image': comp_data['image'],
+                    'component': comp_name
+                }
+
+        print(f"Snapshot contains {len(snapshot_repo_map)} component images")
+
+        # Now override images that match snapshot repos
+        override_count = 0
+        for image in images:
+            image_value = image['value']
+
+            # Try to find matching snapshot by repo name
+            # odh-build-metadata images are like: quay.io/opendatahub/data-science-pipelines-operator@sha256:...
+            # We need to match this with the git repo in snapshot
+
+            # Extract repo name from image URL
+            # Format: registry/org/repo@digest
+            if '@sha256:' in image_value:
+                repo_part = image_value.split('@')[0]  # quay.io/opendatahub/data-science-pipelines-operator
+                repo_name = repo_part.split('/')[-1]   # data-science-pipelines-operator
+
+                # Try to find matching git URL in snapshot
+                for git_url, snapshot_data in snapshot_repo_map.items():
+                    # Extract repo name from git URL
+                    # e.g., https://github.com/opendatahub-io/data-science-pipelines-operator
+                    git_repo_name = git_url.rstrip('/').split('/')[-1]
+
+                    # Match by repo name
+                    if git_repo_name == repo_name or git_repo_name.replace('_', '-') == repo_name:
+                        old_value = image['value']
+                        image['value'] = DoubleQuotedScalarString(snapshot_data['image'])
+                        override_count += 1
+                        print(f"SNAPSHOT OVERRIDE [{snapshot_data['component']}]: {image['name']}")
+                        print(f"  OLD: {old_value}")
+                        print(f"  NEW: {snapshot_data['image']}")
+                        break
+
+        print(f"Applied {override_count} snapshot overrides to images")
+        return images
 
 
 def str_presenter(dumper, data):
@@ -427,7 +535,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output-file-path', required=False,
                         help='Path of the output bundle csv', dest='output_file_path')
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
-                        help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
+                        help='Path of the snapshot JSON file containing component images from PR builds.', dest='snapshot_json_path')
     parser.add_argument('-f', '--image-filter', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='image_filter')
     parser.add_argument('-v', '--rhoai-version', required=False,
@@ -445,25 +553,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, quay_tag=args.quay_tag, release_branch=args.release_branch, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, snapshot_json_path=args.snapshot_json_path, rhoai_version=args.rhoai_version, quay_tag=args.quay_tag, release_branch=args.release_branch, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type)
         processor.patch_bundle_csv()
-
-    # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'
-    # bundle_csv_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/to-be-processed/bundle/manifests/rhods-operator.clusterserviceversion.yaml'
-    # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
-    # annotation_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/to-be-processed/bundle/metadata/annotations.yaml'
-    # output_file_path = 'output.yaml'
-    # rhoai_version = 'rhoai-2.13'
-    # release_branch = 'rhoai-2.13'
-    # quay_tag = 'rhoai-2.13'
-    # push_pipeline_operation = 'enable'
-    # push_pipeline_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/.tekton/odh-operator-bundle-v2-13-push.yaml'
-    #
-    #
-    # processor = bundle_processor(build_config_path=build_config_path, bundle_csv_path=bundle_csv_path,
-    #                              patch_yaml_path=patch_yaml_path, rhoai_version=args.rhoai_version, quay_tag=args.quay_tag, release_branch=args.release_branch,
-    #                              output_file_path=output_file_path, annotation_yaml_path=annotation_yaml_path,
-    #                              push_pipeline_yaml_path=push_pipeline_yaml_path, push_pipeline_operation=push_pipeline_operation)
-    # processor.patch_bundle_csv()
-
-
