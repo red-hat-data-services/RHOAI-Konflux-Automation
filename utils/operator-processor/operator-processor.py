@@ -36,7 +36,7 @@ class operator_processor:
                                              preserve_quotes=True)
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
-        self.push_pipeline_dict = ruyaml.load(open(self.push_pipeline_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
+        self.push_pipeline_dict = ruyaml.load(open(self.push_pipeline_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True) if self.push_pipeline_yaml_path else {}
 
     def parse_patch_yaml(self):
         return yaml.safe_load(open(self.patch_yaml_path))
@@ -50,8 +50,8 @@ class operator_processor:
             self.update_operands_map()
         if self.git_labels_meta:
             self.update_manifest_config()
-
-        self.process_push_pipeline()
+        if self.push_pipeline_yaml_path:
+            self.process_push_pipeline()
 
         self.write_output_files()
 
@@ -297,7 +297,7 @@ if __name__ == '__main__':
     parser.add_argument('-v', '--rhoai-version', required=False,
                         help='The version of Openshift-AI being processed', dest='rhoai_version')
     parser.add_argument('-y', '--push-pipeline-yaml-path', required=False,
-                        help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
+                        help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path', default='')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
     args = parser.parse_args()
