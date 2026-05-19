@@ -509,13 +509,15 @@ class bundle_processor:
             2. Apply the updated patch to values.yaml: set operator image, relatedImages
                (preserved as list format), and cloud-specific images.
         """
+        cloud_providers = ['azure', 'coreweave', 'aws']
+
         LOGGER.info("Step 1: Updating xks-values-patch.yaml with resolved digests")
         LOGGER.info("")
         LOGGER.info("Updating operator image in values-patch...")
         if 'rhaiOperator' in self.xks_helm_patch_dict and 'image' in self.xks_helm_patch_dict['rhaiOperator']:
             self.xks_helm_patch_dict['rhaiOperator']['image'] = DoubleQuotedScalarString(self.operator_image)
             LOGGER.info(f"  rhaiOperator.image -> {self.operator_image}")
-        for section in ['azure', 'coreweave']:
+        for section in cloud_providers:
             cloud_mgr = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
             if 'image' in cloud_mgr:
                 self.xks_helm_patch_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
@@ -563,7 +565,7 @@ class bundle_processor:
                 self.xks_helm_values_dict['hooks']['cliImage'] = self.xks_helm_patch_dict['hooks']['cliImage']
                 LOGGER.info("  hooks.cliImage updated")
 
-        for section in ['azure', 'coreweave']:
+        for section in cloud_providers:
             cloud_mgr_patch = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
             if 'image' in cloud_mgr_patch:
                 if section in self.xks_helm_values_dict and 'cloudManager' in self.xks_helm_values_dict[section]:
