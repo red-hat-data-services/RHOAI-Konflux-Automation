@@ -515,7 +515,7 @@ class bundle_processor:
         if 'rhaiOperator' in self.xks_helm_patch_dict and 'image' in self.xks_helm_patch_dict['rhaiOperator']:
             self.xks_helm_patch_dict['rhaiOperator']['image'] = DoubleQuotedScalarString(self.operator_image)
             LOGGER.info(f"  rhaiOperator.image -> {self.operator_image}")
-        for section in ['azure', 'coreweave']:
+        for section in ['azure', 'coreweave', 'aws']:
             cloud_mgr = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
             if 'image' in cloud_mgr:
                 self.xks_helm_patch_dict[section]['cloudManager']['image'] = DoubleQuotedScalarString(self.operator_image)
@@ -563,7 +563,7 @@ class bundle_processor:
                 self.xks_helm_values_dict['hooks']['cliImage'] = self.xks_helm_patch_dict['hooks']['cliImage']
                 LOGGER.info("  hooks.cliImage updated")
 
-        for section in ['azure', 'coreweave']:
+        for section in ['azure', 'coreweave', 'aws']:
             cloud_mgr_patch = self.xks_helm_patch_dict.get(section, {}).get('cloudManager', {})
             if 'image' in cloud_mgr_patch:
                 if section in self.xks_helm_values_dict and 'cloudManager' in self.xks_helm_values_dict[section]:
