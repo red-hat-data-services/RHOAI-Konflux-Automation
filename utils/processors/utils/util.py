@@ -386,6 +386,27 @@ def load_yaml_file(file_path: str, parser: str = 'ruamel') -> Dict:
             raise ValueError(f"Unknown parser '{parser}'. Use 'ruamel' or 'pyyaml'.")
 
 
+def load_multi_document_yaml_file(file_path: str) -> List[Dict]:
+    """
+    Load a multi-document YAML file with full round-trip preservation
+    and return all documents as a list.
+
+    Args:
+        file_path: Path to the YAML file.
+
+    Returns:
+        List of parsed YAML documents.
+    """
+    LOGGER.info(f"  Parsing multi-doc yaml file: {file_path}")
+    yaml_instance = YAML()
+    yaml_instance.preserve_quotes = True
+    with open(file_path, 'r') as f:
+        docs = list(yaml_instance.load_all(f))
+
+    LOGGER.debug(f"  Loaded {len(docs)} documents from {file_path}")
+    return docs
+
+
 def write_yaml_file(data: Dict, file_path: str) -> None:
     """
     Write a dictionary to a YAML file using ruamel.yaml with RoundTripDumper.
@@ -445,6 +466,36 @@ def write_yaml_file_rt(data: Dict, file_path: str,
     yaml_instance.indent(mapping=indent_mapping, sequence=indent_sequence, offset=indent_offset)
     with open(file_path, 'w') as f:
         yaml_instance.dump(data, f)
+
+
+def read_file(file_path: str) -> str:
+    """
+    Read a text file and return its contents as a string.
+
+    Args:
+        file_path: The path to the file to read
+
+    Returns:
+        The file contents as a string
+    """
+    LOGGER.info(f"  Reading file: {file_path}")
+    with open(file_path, 'r') as f:
+        return f.read()
+
+
+def read_file_lines(file_path: str) -> List[str]:
+    """
+    Read a text file and return its contents as a list of lines.
+
+    Args:
+        file_path: The path to the file to read
+
+    Returns:
+        List of lines from the file
+    """
+    LOGGER.info(f"  Reading file lines: {file_path}")
+    with open(file_path, 'r') as f:
+        return f.readlines()
 
 
 def write_file(content: str, file_path: str) -> None:
