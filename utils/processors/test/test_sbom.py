@@ -329,6 +329,58 @@ class TestErrorHandling:
 
 
 # ============================================================================
+# Tag stripping
+# ============================================================================
+
+class TestTagStripping:
+
+    @patch('utils.sbom.subprocess.run')
+    def test_download_sbom_strips_tag(self, mock_run):
+        """download_sbom strips the tag from a tagged+digested URI."""
+        sbom = make_sbom([make_package('vllm', '0.17.1')])
+        mock_run.return_value = mock_subprocess_result(stdout=json.dumps(sbom))
+
+        download_sbom('registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4@sha256:abc123', all_arches=False)
+
+        called_uri = mock_run.call_args[0][0][3]
+        assert ':3.4@' not in called_uri
+        assert called_uri == 'registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:abc123'
+
+    @patch('utils.sbom.subprocess.run')
+    def test_download_sbom_no_tag_unchanged(self, mock_run):
+        """download_sbom leaves a digest-only URI unchanged."""
+        sbom = make_sbom([make_package('vllm', '0.17.1')])
+        mock_run.return_value = mock_subprocess_result(stdout=json.dumps(sbom))
+
+        download_sbom('registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:abc123', all_arches=False)
+
+        called_uri = mock_run.call_args[0][0][3]
+        assert called_uri == 'registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:abc123'
+
+    @patch('utils.sbom.subprocess.run')
+    def test_get_package_info_strips_tag(self, mock_run):
+        """get_package_info also strips tags (via download_sbom)."""
+        sbom = make_sbom([make_package('vllm', '0.17.1')])
+        single_manifest = {'mediaType': 'application/vnd.oci.image.manifest.v1+json'}
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == 'skopeo':
+                return mock_subprocess_result(stdout=json.dumps(single_manifest))
+            if cmd[0] == 'cosign':
+                return mock_subprocess_result(stdout=json.dumps(sbom))
+            return mock_subprocess_result(returncode=1)
+
+        mock_run.side_effect = side_effect
+
+        pkg = get_package_info('registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4@sha256:abc123', 'vllm')
+
+        assert pkg['name'] == 'vllm'
+        cosign_calls = [c for c in mock_run.call_args_list if c[0][0][0] == 'cosign']
+        for call in cosign_calls:
+            assert ':3.4@' not in call[0][0][3]
+
+
+# ============================================================================
 # Live tests — require cosign, skopeo, and registry.redhat.io auth
 # ============================================================================
 

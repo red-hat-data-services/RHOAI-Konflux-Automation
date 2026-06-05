@@ -3,6 +3,7 @@ Utilities for downloading SBOMs from container image registries using cosign.
 """
 
 import json
+import re
 import subprocess
 from typing import Dict, List, Optional, Union
 
@@ -35,6 +36,7 @@ def download_sbom(image_uri: str, all_arches: bool = True) -> Union[Dict, Dict[s
     Raises:
         RuntimeError: If cosign fails to download the SBOM
     """
+    image_uri = _strip_tag(image_uri)
     if all_arches:
         return _download_sbom_all_arches(image_uri)
     return _download_sbom_single(image_uri)
@@ -189,3 +191,12 @@ def _get_arch_digests(image_uri: str) -> List[tuple]:
         ]
     except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
         return []
+
+
+def _strip_tag(image_uri: str) -> str:
+    """Strip the tag from an image URI that has both a tag and a digest.
+
+    e.g., 'registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4@sha256:abc' becomes
+          'registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:abc'
+    """
+    return re.sub(r':[^\s:@]+@', '@', image_uri)
