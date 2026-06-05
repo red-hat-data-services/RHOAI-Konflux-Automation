@@ -1,11 +1,14 @@
 """
 Tests for utils/sbom.py.
 
-All subprocess calls (cosign, skopeo) are mocked so tests run offline and fast.
+Mocked tests run offline and fast. Live tests hit real registries and require
+cosign/skopeo + auth to registry.redhat.io.
 
 Run:
     cd utils/processors
-    python -m pytest test/test_sbom.py -v
+    python -m pytest test/test_sbom.py -v              # mocked only
+    python -m pytest test/test_sbom.py -v -m live      # live only
+    python -m pytest test/test_sbom.py -v -m 'not live' # explicit skip live
 """
 
 import json
@@ -323,3 +326,67 @@ class TestErrorHandling:
 
         with pytest.raises(RuntimeError):
             download_sbom(IMAGE, all_arches=False)
+
+
+# ============================================================================
+# Live tests — require cosign, skopeo, and registry.redhat.io auth
+# ============================================================================
+
+live = pytest.mark.live
+
+LIVE_IMAGES = {
+    'gaudi': 'registry.redhat.io/rhaii/vllm-gaudi-rhel9@sha256:71008b2151586551ec0969ffc5b175f726ed6f6bebee29cdc289549e216609bc',
+    'cuda':  'registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:ad06abf3bb5235ebb5b2df84cd1b9fd09e823f0ff2eebfc82bb4590275ccfe0b',
+    'rocm':  'registry.redhat.io/rhaii/vllm-rocm-rhel9@sha256:98375507f524731a76877fb7ac5451be6fabbf8751e18802943ae8abe44a9bca',
+    'spyre': 'registry.redhat.io/rhaii/vllm-spyre-rhel9@sha256:61ee874175b314a4d5425e68b4320ef53af2318c58ef7e74e77d8bbf5183fc33',
+    'cpu':   'registry.redhat.io/rhaii/vllm-cpu-rhel9@sha256:dd104214095322ca92fb71149ae2bea8cfff54d6d261079740f673a840ed0795',
+}
+
+
+class TestLiveDownloadSbom:
+
+    @live
+    def test_single_arch_image(self):
+        """Direct single-arch image (not a manifest list)."""
+        single_arch = 'registry.redhat.io/rhaii/vllm-gaudi-rhel9@sha256:ce1e4fd82dd37d299ce8c64a237971d00faf602f06868c986e81aefa04c283ef'
+        result = download_sbom(single_arch, all_arches=False)
+
+        assert result['spdxVersion'] == 'SPDX-2.3'
+        assert len(result['packages']) > 100
+
+    @live
+    def test_manifest_list_all_arches(self):
+        """Manifest list should resolve per-arch SBOMs."""
+        result = download_sbom(LIVE_IMAGES['cuda'])
+
+        assert 'amd64' in result
+        for arch, sbom in result.items():
+            assert sbom['spdxVersion'] == 'SPDX-2.3'
+            assert len(sbom['packages']) > 100
+
+    @live
+    def test_manifest_list_multi_arch(self):
+        """Spyre image has ppc64le, s390x, and amd64."""
+        result = download_sbom(LIVE_IMAGES['spyre'])
+
+        assert len(result) >= 3
+        assert 'amd64' in result
+        assert 'ppc64le' in result
+        assert 's390x' in result
+
+
+class TestLiveGetPackageInfo:
+
+    @live
+    @pytest.mark.parametrize('variant', list(LIVE_IMAGES.keys()))
+    def test_vllm_package_found(self, variant):
+        pkg = get_package_info(LIVE_IMAGES[variant], 'vllm')
+
+        assert pkg['name'] == 'vllm'
+        assert pkg['versionInfo']
+        assert '+' in pkg['versionInfo'] or pkg['versionInfo'].count('.') >= 2
+
+    @live
+    def test_nonexistent_package_raises(self):
+        with pytest.raises(RuntimeError, match='not found'):
+            get_package_info(LIVE_IMAGES['gaudi'], 'nonexistent-package-xyz')
