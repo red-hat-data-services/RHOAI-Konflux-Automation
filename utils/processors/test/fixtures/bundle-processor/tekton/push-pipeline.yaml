@@ -1,0 +1,12 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "push"
+      && target_branch == "rhoai-3.4"
+      && ( "bundle/**".pathChanged() || ".tekton/push.yaml".pathChanged() )
+  name: test-push-pipeline
+  namespace: test-tenant
+spec:
+  params: []

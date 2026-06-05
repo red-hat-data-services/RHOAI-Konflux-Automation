@@ -1,0 +1,13 @@
+patch:
+  version: 3.4.1
+  relatedImages:
+    - name: RELATED_IMAGE_ODH_OPERATOR_IMAGE
+      value: "quay.io/rhoai/odh-rhel9-operator@sha256:97acc9de14a06aea730611d6e9c4141758e4a63bc45f1dcaf78ebeb1c27966b6"
+    - name: RELATED_IMAGE_ODH_DASHBOARD_IMAGE
+      value: "quay.io/rhoai/odh-dashboard-rhel9@sha256:ae006d7bb6eab074b685df5896d055751e713b5d7b18aeecf58513ff15c63a77"
+    - name: RELATED_IMAGE_ODH_MODEL_CONTROLLER_IMAGE
+      value: "quay.io/rhoai/odh-model-controller-rhel9@sha256:83aaef2396d068dd810346b474cbe929f7bdba0e8da5fe1e6cdccfedaf3da60e"
+  additional-related-images:
+    file: additional-images-patch.yaml
+  additional-fields:
+    file: csv-patch.yaml

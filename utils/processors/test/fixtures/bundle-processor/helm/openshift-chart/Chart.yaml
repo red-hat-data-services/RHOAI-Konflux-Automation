@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rhai-on-openshift-chart
+description: Test OpenShift Helm chart
+type: application
+version: 3.4.0
+appVersion: "3.4.0"

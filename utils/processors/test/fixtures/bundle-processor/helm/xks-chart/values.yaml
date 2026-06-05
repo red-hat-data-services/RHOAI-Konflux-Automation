@@ -1,0 +1,19 @@
+enabled: true
+rhaiOperator:
+  namespace: redhat-ods-operator
+  image: "quay.io/rhoai/odh-rhel9-operator@sha256:placeholder"
+  imagePullPolicy: Always
+  relatedImages:
+    - name: RELATED_IMAGE_ODH_DASHBOARD_IMAGE
+      value: "quay.io/rhoai/odh-dashboard-rhel9@sha256:placeholder"
+hooks:
+  cliImage: "quay.io/placeholder@sha256:placeholder"
+azure:
+  cloudManager:
+    image: "quay.io/rhoai/odh-rhel9-operator@sha256:placeholder"
+coreweave:
+  cloudManager:
+    image: "quay.io/rhoai/odh-rhel9-operator@sha256:placeholder"
+aws:
+  cloudManager:
+    image: "quay.io/rhoai/odh-rhel9-operator@sha256:placeholder"

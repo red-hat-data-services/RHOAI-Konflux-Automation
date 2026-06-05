@@ -1,0 +1,5 @@
+sbom-metadata:
+  - env_vars:
+      - "RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE"
+    package: "vllm"
+    suffix: "_UPSTREAM_VERSION"

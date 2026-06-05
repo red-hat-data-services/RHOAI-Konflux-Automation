@@ -1,0 +1,7 @@
+tags:
+  install-with-helm-dependencies: false
+operator:
+  type: rhoai
+  rhoai:
+    olm:
+      channel: placeholder
