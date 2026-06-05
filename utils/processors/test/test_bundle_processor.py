@@ -285,3 +285,123 @@ class TestBundleProcessorE2E:
         assert version
         # Should look like a semver with optional RH suffix (e.g., "0.18.0+rhaiv.7")
         assert '.' in version
+
+
+# ============================================================================
+# Tests against real RHOAI-Build-Config files (git submodule)
+#
+# Input files: submodule pinned at 8686e625ea (pre-processor state)
+# Expected output: fixtures/rhoai-34-expected/ from 1008c15abf (post-processor)
+# ============================================================================
+
+RBC_SUBMODULE_DIR = os.path.join(os.path.dirname(__file__), 'fixtures', 'RHOAI-Build-Config')
+EXPECTED_DIR = os.path.join(os.path.dirname(__file__), 'fixtures', 'rhoai-34-expected')
+
+requires_build_config = pytest.mark.skipif(
+    not os.path.isfile(os.path.join(RBC_SUBMODULE_DIR, 'config', 'build-config.yaml')),
+    reason='RHOAI-Build-Config submodule not initialized (run git submodule update --init)'
+)
+
+
+@pytest.fixture
+def rbc_work_dir(tmp_path):
+    """
+    Set up a working directory mirroring how the GitHub Actions workflow
+    prepares inputs for the bundle processor, using the pinned submodule.
+    """
+    rbc = RBC_SUBMODULE_DIR
+    work = tmp_path / 'rbc'
+    work.mkdir()
+
+    shutil.copytree(os.path.join(rbc, 'to-be-processed', 'bundle'), work / 'raw-bundle')
+    shutil.copytree(os.path.join(rbc, 'to-be-processed', 'helm'), work / 'raw-helm')
+    shutil.copy2(os.path.join(rbc, 'config', 'build-config.yaml'), work / 'build-config.yaml')
+    shutil.copytree(os.path.join(rbc, 'bundle'), work / 'bundle-config', dirs_exist_ok=True)
+    shutil.copy2(os.path.join(rbc, 'helm', 'xks-values-patch.yaml'), work / 'xks-values-patch.yaml')
+    shutil.copy2(os.path.join(rbc, 'helm', 'openshift-values-patch.yaml'), work / 'openshift-values-patch.yaml')
+
+    for f in os.listdir(os.path.join(rbc, '.tekton')):
+        shutil.copy2(os.path.join(rbc, '.tekton', f), work / f)
+
+    return work
+
+
+class TestBundleProcessorWithRealConfig:
+
+    @live
+    @requires_quay_token
+    @requires_build_config
+    def test_process_matches_expected_output(self, rbc_work_dir):
+        """
+        Run bundle processor with real rhoai-3.4 config files pinned at
+        commit 8686e625ea and verify the output matches the known-good
+        CSV from commit 1008c15abf.
+        """
+        from importlib import import_module
+        bp_module = import_module('bundle-processor')
+        bundle_processor = bp_module.bundle_processor
+
+        work = rbc_work_dir
+        output_csv = str(work / 'raw-bundle' / 'manifests' / 'rhods-operator.clusterserviceversion.yaml')
+
+        processor = bundle_processor(
+            build_config_path=str(work / 'build-config.yaml'),
+            bundle_csv_path=str(work / 'raw-bundle' / 'manifests' / 'rhods-operator.clusterserviceversion.yaml'),
+            patch_yaml_path=str(work / 'bundle-config' / 'bundle-patch.yaml'),
+            rhoai_version='rhoai-3.4',
+            output_file_path=output_csv,
+            annotation_yaml_path=str(work / 'raw-bundle' / 'metadata' / 'annotations.yaml'),
+            push_pipeline_operation='enable',
+            push_pipeline_yaml_path=str(work / 'odh-operator-bundle-v3-4-push.yaml'),
+            build_type='ci',
+            xks_helm_patch_yaml_path=str(work / 'xks-values-patch.yaml'),
+            xks_helm_values_yaml_path=str(work / 'raw-helm' / 'rhai-on-xks-chart' / 'values.yaml'),
+            xks_helm_push_pipeline_yaml_path=str(work / 'rhai-on-xks-chart-v3-4-push.yaml'),
+            openshift_helm_patch_yaml_path=str(work / 'openshift-values-patch.yaml'),
+            openshift_helm_values_yaml_path=str(work / 'raw-helm' / 'rhai-on-openshift-chart' / 'values.yaml'),
+            openshift_helm_push_pipeline_yaml_path=str(work / 'rhai-on-openshift-chart-v3-4-push.yaml'),
+        )
+        processor.process()
+
+        with open(output_csv) as f:
+            output = yaml.safe_load(f)
+
+        expected_csv_path = os.path.join(EXPECTED_DIR, 'rhods-operator.clusterserviceversion.yaml')
+        with open(expected_csv_path) as f:
+            expected = yaml.safe_load(f)
+
+        # Version and name must match exactly
+        assert output['metadata']['name'] == expected['metadata']['name']
+        assert output['spec']['version'] == expected['spec']['version']
+
+        # Operator image digest must match exactly
+        assert output['metadata']['annotations']['containerImage'] == expected['metadata']['annotations']['containerImage']
+
+        container_spec = output['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
+        expected_container_spec = expected['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
+        assert container_spec['image'] == expected_container_spec['image']
+
+        # Every RELATED_IMAGE_ env var and its full value (registry + repo + digest) must match
+        output_env = {e['name']: e.get('value') for e in container_spec['env']}
+        expected_env = {e['name']: e.get('value') for e in expected_container_spec['env']}
+
+        expected_related = {k: v for k, v in expected_env.items() if k.startswith('RELATED_IMAGE_')}
+        for name, expected_value in expected_related.items():
+            assert name in output_env, f"Missing env var: {name}"
+            assert output_env[name] == expected_value, f"Value mismatch for {name}: got {output_env[name]}, expected {expected_value}"
+
+        # No build or stage registry URIs should remain in any env var
+        build_registries = {'quay.io', 'registry.stage.redhat.io'}
+        for name, value in output_env.items():
+            if value and name.startswith('RELATED_IMAGE_'):
+                registry = value.split('/')[0]
+                assert registry not in build_registries, f"Unreplaced build/stage registry in {name}: {value}"
+
+        # All non-image env vars should also match
+        for name, expected_value in expected_env.items():
+            if not name.startswith('RELATED_IMAGE_'):
+                assert name in output_env, f"Missing env var: {name}"
+                assert output_env[name] == expected_value, f"Value mismatch for {name}: got {output_env[name]}, expected {expected_value}"
+
+        # relatedImages count must match
+        assert len(output['spec']['relatedImages']) == len(expected['spec']['relatedImages'])
