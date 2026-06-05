@@ -153,13 +153,19 @@ class bundle_processor:
 
         LOGGER.info("")
         LOGGER.info("=============================================================================")
+        LOGGER.info("Loading additional images...")
+        LOGGER.info("=============================================================================")
+        self.additional_image_entries = self._load_additional_images()
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
         LOGGER.info("Extracting SBOM metadata (before registry replacements)...")
         LOGGER.info("=============================================================================")
         self.sbom_metadata_entries = self.extract_sbom_metadata()
 
         LOGGER.info("")
         LOGGER.info("=============================================================================")
-        LOGGER.info("Applying registry and repo replacements for Operator and Operand Images...")
+        LOGGER.info("Applying registry and repo replacements...")
         LOGGER.info("=============================================================================")
         self.apply_replacements()
         LOGGER.debug(f"operator_image_entry: {json.dumps(self.operator_image_entry, indent=4, default=str)}")
@@ -312,11 +318,36 @@ class bundle_processor:
         LOGGER.info("  Bundle build args generated successfully!")
         return bundle_build_args
 
+    def _load_additional_images(self):
+        """
+        Load additional images from patch config, strip tags, and deduplicate.
+
+        Returns:
+            List of image entry dicts, or empty list if not configured.
+        """
+        if 'additional-related-images' not in self.patch_dict['patch']:
+            return []
+
+        additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
+        additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
+        LOGGER.info("  Loading additional images from patch...")
+
+        additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
+
+        return list({
+            image["name"]: {
+                "name": image["name"],
+                "value": re.sub(r':[^\s:@]+@', '@', image["value"])
+            }
+            for image in additional_images_dict['additionalImages']
+        }.values())
+
     def apply_replacements(self):
         """
-        Applies registry and repo replacements for operator and operand images.
-        
-        Replaces build registry and repo with production registry and repo mappings.
+        Applies registry and repo replacements for operator, operand, and additional images.
+
+        - Operator and operand images: replaces build registry/repo with production equivalents
+        - Additional images: validates registries, replaces stage with production
         """
         self.operand_image_entries = self.operands_map_dict['relatedImages']
 
@@ -331,6 +362,24 @@ class bundle_processor:
             registry_mapping={self.build_config_dict['config']['replacements'][0]['registry']: CONSTANTS.PRODUCTION_REGISTRY},
             repo_mappings=self.build_config_dict['config']['replacements'][0]['repo_mappings']
         )
+
+        LOGGER.debug("  Validating registries and applying replacements for additional images...")
+        allowed_registries = {CONSTANTS.PRODUCTION_REGISTRY, CONSTANTS.STAGE_REGISTRY}
+        disallowed_images = []
+        for image in self.additional_image_entries:
+            registry = image['value'].split('/')[0]
+            if registry not in allowed_registries:
+                disallowed_images.append(image)
+            else:
+                original_value = image['value']
+                image['value'] = image['value'].replace(CONSTANTS.STAGE_REGISTRY, CONSTANTS.PRODUCTION_REGISTRY)
+                if image['value'] != original_value:
+                    LOGGER.debug(f"    {original_value} -> {image['value']}")
+        if disallowed_images:
+            additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
+            LOGGER.error(f"{additional_images_file} contains entries from disallowed registries. Allowed registries are: {allowed_registries}")
+            LOGGER.error(f"{json.dumps(disallowed_images, indent=4, default=str)}")
+            sys.exit(1)
 
     def extract_sbom_metadata(self):
         """
@@ -372,6 +421,8 @@ class bundle_processor:
             str(entry['name']): str(entry['value'])
             for entry in self.operands_map_dict['relatedImages']
         }
+        for entry in self.additional_image_entries:
+            image_lookup[str(entry['name'])] = str(entry['value'])
 
         new_env_vars = []
         for sbom_entry in sbom_entries:
@@ -381,7 +432,7 @@ class bundle_processor:
             for env_var in sbom_entry['env_vars']:
                 image_uri = image_lookup.get(env_var)
                 if not image_uri:
-                    LOGGER.warning(f"  '{env_var}' not found in operands map, skipping")
+                    LOGGER.warning(f"  '{env_var}' not found in operands map or additional images, skipping")
                     continue
 
                 LOGGER.info(f"  Extracting '{package_name}' version from SBOM for {env_var}...")
@@ -489,44 +540,9 @@ class bundle_processor:
         LOGGER.info("Generating full list of deployment environment variables:")
         LOGGER.info("  Adding images from operands map...")
         
-        # Load and merge additional images if defined in patch config
-        if 'additional-related-images' in self.patch_dict['patch']:
-            additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
-            additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
+        if self.additional_image_entries:
             LOGGER.info("  Adding images from additional images patch...")
-            
-            additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
-            
-            # Drop tags from image values and deduplicate by name.
-            # Later entries with the same name will overwrite earlier ones.
-            additional_images = list({
-                image["name"]: {
-                    "name": image["name"],
-                    "value": re.sub(r':[^\s:@]+@', '@', image["value"])
-                }
-                for image in additional_images_dict['additionalImages']
-            }.values())
-
-            LOGGER.debug("  Validating registries and applying replacements for additional images...")
-            allowed_registries = {CONSTANTS.PRODUCTION_REGISTRY, CONSTANTS.STAGE_REGISTRY}
-            disallowed_images = []
-            for image in additional_images:
-                registry = image['value'].split('/')[0]
-                if registry not in allowed_registries:
-                    disallowed_images.append(image)
-                else:
-                    original_value = image['value']
-                    image['value'] = image['value'].replace(CONSTANTS.STAGE_REGISTRY, CONSTANTS.PRODUCTION_REGISTRY)
-                    if image['value'] != original_value:
-                        LOGGER.debug(f"    {original_value} -> {image['value']}")
-            if disallowed_images:
-                LOGGER.error(f"{additional_images_file} contains entries from disallowed registries. Allowed registries are: {allowed_registries}")
-                LOGGER.error(f"{json.dumps(disallowed_images, indent=4, default=str)}")
-                sys.exit(1)
-
-            LOGGER.debug(f"  additional_images: {json.dumps(additional_images, indent=4, default=str)}")
-
-            new_env_vars = self.operand_image_entries + additional_images
+            new_env_vars = self.operand_image_entries + self.additional_image_entries
         else:
             new_env_vars = self.operand_image_entries
 

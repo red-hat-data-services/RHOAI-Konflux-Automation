@@ -3,3 +3,5 @@ additionalImages:
     value: "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.20@sha256:dacf981af8834cced0c969b5210058ec845a16a1b46c531c077a143666732411"
   - name: RELATED_IMAGE_OSE_CLI_IMAGE
     value: "registry.redhat.io/openshift4/ose-cli-rhel9:v4.20@sha256:7434fde9f36d6e638a77977ff1bc2c77d61508227744319497c007649f12fd00"
+  - name: RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE
+    value: "registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4.0@sha256:ad06abf3bb5235ebb5b2df84cd1b9fd09e823f0ff2eebfc82bb4590275ccfe0b"
