@@ -1,3 +1,0 @@
-[submodule "utils/processors/test/fixtures/RHOAI-Build-Config"]
-	path = utils/processors/test/fixtures/RHOAI-Build-Config
-	url = https://github.com/red-hat-data-services/RHOAI-Build-Config.git

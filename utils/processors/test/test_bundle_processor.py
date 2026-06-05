@@ -15,8 +15,11 @@ import os
 import sys
 import json
 import shutil
+import subprocess
+import tempfile
 import pytest
 import yaml
+from unittest.mock import patch, wraps
 
 processors_root = os.path.abspath(os.path.join(os.path.dirname(__file__), f".."))
 if processors_root not in sys.path:
@@ -288,120 +291,221 @@ class TestBundleProcessorE2E:
 
 
 # ============================================================================
-# Tests against real RHOAI-Build-Config files (git submodule)
+# Regression tests against real RHOAI-Build-Config commits
 #
-# Input files: submodule pinned at 8686e625ea (pre-processor state)
-# Expected output: fixtures/rhoai-34-expected/ from 1008c15abf (post-processor)
+# Each test case is defined by:
+#   - input_sha: the commit with inputs (pre-processor state)
+#   - output_sha: the commit with expected output (post-processor state)
+#   - rhoai_version: the release branch name
+#
+# The test clones the repo once (cached in tmp), creates worktrees for
+# input and output commits, runs process(), and verifies exact output match.
 # ============================================================================
 
-RBC_SUBMODULE_DIR = os.path.join(os.path.dirname(__file__), 'fixtures', 'RHOAI-Build-Config')
-EXPECTED_DIR = os.path.join(os.path.dirname(__file__), 'fixtures', 'rhoai-34-expected')
+RBC_REPO = 'https://github.com/red-hat-data-services/RHOAI-Build-Config.git'
+RBC_CACHE_DIR = os.path.join(tempfile.gettempdir(), 'rhoai-test-rbc-cache')
 
-requires_build_config = pytest.mark.skipif(
-    not os.path.isfile(os.path.join(RBC_SUBMODULE_DIR, 'config', 'build-config.yaml')),
-    reason='RHOAI-Build-Config submodule not initialized (run git submodule update --init)'
-)
+RELEASE_TEST_CASES = [
+    pytest.param(
+        'rhoai-2.25', '34bf215529', 'a7105505dc',
+        id='rhoai-2.25',
+    ),
+    pytest.param(
+        'rhoai-3.3', 'cd47b2b06e', 'ecebae1443',
+        id='rhoai-3.3',
+    ),
+    pytest.param(
+        'rhoai-3.4', '8686e625ea', '1008c15abf',
+        id='rhoai-3.4',
+    ),
+    pytest.param(
+        'rhoai-3.5-ea.1', '0d08bef814', 'bccfc4a9b2',
+        id='rhoai-3.5-ea.1',
+    ),
+    pytest.param(
+        'rhoai-3.5-ea.2', 'f820ec6d62', '93ad516b69',
+        id='rhoai-3.5-ea.2',
+    ),
+]
 
 
-@pytest.fixture
-def rbc_work_dir(tmp_path):
+@pytest.fixture(scope='session')
+def rbc_clone():
+    """Clone RHOAI-Build-Config once per session, reuse across tests."""
+    if not os.path.isdir(os.path.join(RBC_CACHE_DIR, 'objects')):
+        subprocess.run(
+            ['git', 'clone', '--bare', '--filter=blob:none', RBC_REPO, RBC_CACHE_DIR],
+            check=True, capture_output=True, timeout=300,
+        )
+    else:
+        subprocess.run(
+            ['git', 'fetch', '--all'],
+            cwd=RBC_CACHE_DIR, check=True, capture_output=True, timeout=120,
+        )
+    return RBC_CACHE_DIR
+
+
+def _checkout_to(bare_repo, sha, dest):
+    """Export a commit from a bare repo to a directory."""
+    os.makedirs(dest, exist_ok=True)
+    subprocess.run(
+        ['git', 'worktree', 'add', '--detach', dest, sha],
+        cwd=bare_repo, check=True, capture_output=True,
+    )
+
+
+def _cleanup_worktree(bare_repo, dest):
+    subprocess.run(
+        ['git', 'worktree', 'remove', '--force', dest],
+        cwd=bare_repo, capture_output=True,
+    )
+
+
+def _build_processor_args(rbc_dir, work_dir, rhoai_version):
     """
-    Set up a working directory mirroring how the GitHub Actions workflow
-    prepares inputs for the bundle processor, using the pinned submodule.
+    Build bundle_processor constructor args by detecting which files exist,
+    mirroring the GitHub Actions workflow logic.
     """
-    rbc = RBC_SUBMODULE_DIR
-    work = tmp_path / 'rbc'
-    work.mkdir()
+    version_suffix = rhoai_version.replace('rhoai-', 'v').replace('.', '-')
 
-    shutil.copytree(os.path.join(rbc, 'to-be-processed', 'bundle'), work / 'raw-bundle')
-    shutil.copytree(os.path.join(rbc, 'to-be-processed', 'helm'), work / 'raw-helm')
-    shutil.copy2(os.path.join(rbc, 'config', 'build-config.yaml'), work / 'build-config.yaml')
-    shutil.copytree(os.path.join(rbc, 'bundle'), work / 'bundle-config', dirs_exist_ok=True)
-    shutil.copy2(os.path.join(rbc, 'helm', 'xks-values-patch.yaml'), work / 'xks-values-patch.yaml')
-    shutil.copy2(os.path.join(rbc, 'helm', 'openshift-values-patch.yaml'), work / 'openshift-values-patch.yaml')
+    # Copy raw inputs to work dir (processor writes output in-place)
+    raw_bundle = work_dir / 'raw-bundle'
+    raw_helm = work_dir / 'raw-helm'
+    shutil.copytree(os.path.join(rbc_dir, 'to-be-processed', 'bundle'), str(raw_bundle))
+    if os.path.isdir(os.path.join(rbc_dir, 'to-be-processed', 'helm')):
+        shutil.copytree(os.path.join(rbc_dir, 'to-be-processed', 'helm'), str(raw_helm))
 
-    for f in os.listdir(os.path.join(rbc, '.tekton')):
-        shutil.copy2(os.path.join(rbc, '.tekton', f), work / f)
+    output_csv = str(raw_bundle / 'manifests' / 'rhods-operator.clusterserviceversion.yaml')
 
-    return work
+    args = dict(
+        build_config_path=os.path.join(rbc_dir, 'config', 'build-config.yaml'),
+        bundle_csv_path=output_csv,
+        patch_yaml_path=os.path.join(rbc_dir, 'bundle', 'bundle-patch.yaml'),
+        rhoai_version=rhoai_version,
+        output_file_path=output_csv,
+        annotation_yaml_path=str(raw_bundle / 'metadata' / 'annotations.yaml'),
+        push_pipeline_operation='enable',
+        push_pipeline_yaml_path=os.path.join(rbc_dir, '.tekton', f'odh-operator-bundle-{version_suffix}-push.yaml'),
+        build_type='ci',
+    )
+
+    # Helm args — only if the files exist
+    xks_patch = os.path.join(rbc_dir, 'helm', 'xks-values-patch.yaml')
+    xks_values = str(raw_helm / 'rhai-on-xks-chart' / 'values.yaml')
+    xks_push = os.path.join(rbc_dir, '.tekton', f'rhai-on-xks-chart-{version_suffix}-push.yaml')
+    if os.path.isfile(xks_patch) and os.path.isfile(xks_values):
+        args['xks_helm_patch_yaml_path'] = xks_patch
+        args['xks_helm_values_yaml_path'] = xks_values
+        if os.path.isfile(xks_push):
+            args['xks_helm_push_pipeline_yaml_path'] = xks_push
+
+    os_patch = os.path.join(rbc_dir, 'helm', 'openshift-values-patch.yaml')
+    os_values = str(raw_helm / 'rhai-on-openshift-chart' / 'values.yaml')
+    os_push = os.path.join(rbc_dir, '.tekton', f'rhai-on-openshift-chart-{version_suffix}-push.yaml')
+    if os.path.isfile(os_patch) and os.path.isfile(os_values):
+        args['openshift_helm_patch_yaml_path'] = os_patch
+        args['openshift_helm_values_yaml_path'] = os_values
+        if os.path.isfile(os_push):
+            args['openshift_helm_push_pipeline_yaml_path'] = os_push
+
+    return args, output_csv
 
 
-class TestBundleProcessorWithRealConfig:
+def _get_operator_digest_from_csv(rbc_dir):
+    """Extract the operator image digest from the committed CSV."""
+    csv_path = os.path.join(rbc_dir, 'bundle', 'manifests', 'rhods-operator.clusterserviceversion.yaml')
+    with open(csv_path) as f:
+        csv_dict = yaml.safe_load(f)
+    container_image = csv_dict['metadata']['annotations']['containerImage']
+    return container_image.split('@')[1]
+
+
+def _pin_operator_tag(original_get_all_tags, operator_repo, pinned_digest):
+    """
+    Wrap quay_controller.get_all_tags so that queries for the operator repo
+    return the pinned digest instead of whatever the current tag points to.
+    """
+    def wrapper(self_qc, repo, tag):
+        result = original_get_all_tags(self_qc, repo, tag)
+        if repo == operator_repo and result:
+            for t in result:
+                t['manifest_digest'] = pinned_digest
+        return result
+    return wrapper
+
+
+class TestBundleProcessorRegression:
 
     @live
     @requires_quay_token
-    @requires_build_config
-    def test_process_matches_expected_output(self, rbc_work_dir):
+    @pytest.mark.parametrize('rhoai_version, input_sha, output_sha', RELEASE_TEST_CASES)
+    def test_process_matches_expected_output(self, rbc_clone, tmp_path, rhoai_version, input_sha, output_sha):
         """
-        Run bundle processor with real rhoai-3.4 config files pinned at
-        commit 8686e625ea and verify the output matches the known-good
-        CSV from commit 1008c15abf.
+        Replay a real bundle-processor run and verify the output matches
+        the known-good CSV that was committed.
         """
         from importlib import import_module
         bp_module = import_module('bundle-processor')
         bundle_processor = bp_module.bundle_processor
+        from controller.quay_controller import quay_controller
 
-        work = rbc_work_dir
-        output_csv = str(work / 'raw-bundle' / 'manifests' / 'rhods-operator.clusterserviceversion.yaml')
+        input_dir = str(tmp_path / 'input')
+        output_dir = str(tmp_path / 'output')
 
-        processor = bundle_processor(
-            build_config_path=str(work / 'build-config.yaml'),
-            bundle_csv_path=str(work / 'raw-bundle' / 'manifests' / 'rhods-operator.clusterserviceversion.yaml'),
-            patch_yaml_path=str(work / 'bundle-config' / 'bundle-patch.yaml'),
-            rhoai_version='rhoai-3.4',
-            output_file_path=output_csv,
-            annotation_yaml_path=str(work / 'raw-bundle' / 'metadata' / 'annotations.yaml'),
-            push_pipeline_operation='enable',
-            push_pipeline_yaml_path=str(work / 'odh-operator-bundle-v3-4-push.yaml'),
-            build_type='ci',
-            xks_helm_patch_yaml_path=str(work / 'xks-values-patch.yaml'),
-            xks_helm_values_yaml_path=str(work / 'raw-helm' / 'rhai-on-xks-chart' / 'values.yaml'),
-            xks_helm_push_pipeline_yaml_path=str(work / 'rhai-on-xks-chart-v3-4-push.yaml'),
-            openshift_helm_patch_yaml_path=str(work / 'openshift-values-patch.yaml'),
-            openshift_helm_values_yaml_path=str(work / 'raw-helm' / 'rhai-on-openshift-chart' / 'values.yaml'),
-            openshift_helm_push_pipeline_yaml_path=str(work / 'rhai-on-openshift-chart-v3-4-push.yaml'),
-        )
-        processor.process()
+        _checkout_to(rbc_clone, input_sha, input_dir)
+        _checkout_to(rbc_clone, output_sha, output_dir)
 
-        with open(output_csv) as f:
-            output = yaml.safe_load(f)
+        try:
+            work_dir = tmp_path / 'work'
+            work_dir.mkdir()
 
-        expected_csv_path = os.path.join(EXPECTED_DIR, 'rhods-operator.clusterserviceversion.yaml')
-        with open(expected_csv_path) as f:
-            expected = yaml.safe_load(f)
+            args, output_csv = _build_processor_args(input_dir, work_dir, rhoai_version)
 
-        # Version and name must match exactly
-        assert output['metadata']['name'] == expected['metadata']['name']
-        assert output['spec']['version'] == expected['spec']['version']
+            pinned_digest = _get_operator_digest_from_csv(output_dir)
+            original_get_all_tags = quay_controller.get_all_tags
+            pinned_fn = _pin_operator_tag(original_get_all_tags, 'odh-rhel9-operator', pinned_digest)
 
-        # Operator image digest must match exactly
-        assert output['metadata']['annotations']['containerImage'] == expected['metadata']['annotations']['containerImage']
+            with patch.object(quay_controller, 'get_all_tags', pinned_fn):
+                processor = bundle_processor(**args)
+                processor.process()
 
-        container_spec = output['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
-        expected_container_spec = expected['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
-        assert container_spec['image'] == expected_container_spec['image']
+            with open(output_csv) as f:
+                output = yaml.safe_load(f)
 
-        # Every RELATED_IMAGE_ env var and its full value (registry + repo + digest) must match
-        output_env = {e['name']: e.get('value') for e in container_spec['env']}
-        expected_env = {e['name']: e.get('value') for e in expected_container_spec['env']}
+            expected_csv = os.path.join(output_dir, 'bundle', 'manifests', 'rhods-operator.clusterserviceversion.yaml')
+            with open(expected_csv) as f:
+                expected = yaml.safe_load(f)
 
-        expected_related = {k: v for k, v in expected_env.items() if k.startswith('RELATED_IMAGE_')}
-        for name, expected_value in expected_related.items():
-            assert name in output_env, f"Missing env var: {name}"
-            assert output_env[name] == expected_value, f"Value mismatch for {name}: got {output_env[name]}, expected {expected_value}"
+            # Version and name must match exactly
+            assert output['metadata']['name'] == expected['metadata']['name']
+            assert output['spec']['version'] == expected['spec']['version']
 
-        # No build or stage registry URIs should remain in any env var
-        build_registries = {'quay.io', 'registry.stage.redhat.io'}
-        for name, value in output_env.items():
-            if value and name.startswith('RELATED_IMAGE_'):
-                registry = value.split('/')[0]
-                assert registry not in build_registries, f"Unreplaced build/stage registry in {name}: {value}"
+            # Operator image must match exactly (tag resolution is pinned to the bundle-patch digest)
+            assert output['metadata']['annotations']['containerImage'] == expected['metadata']['annotations']['containerImage']
 
-        # All non-image env vars should also match
-        for name, expected_value in expected_env.items():
-            if not name.startswith('RELATED_IMAGE_'):
+            container_spec = output['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
+            expected_container_spec = expected['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]
+            assert container_spec['image'] == expected_container_spec['image']
+
+            # Every env var must match (both RELATED_IMAGE_ and non-image vars)
+            # Operator image env var is excluded from exact match since its digest may drift
+            output_env = {e['name']: e.get('value') for e in container_spec['env']}
+            expected_env = {e['name']: e.get('value') for e in expected_container_spec['env']}
+
+            for name, expected_value in expected_env.items():
                 assert name in output_env, f"Missing env var: {name}"
                 assert output_env[name] == expected_value, f"Value mismatch for {name}: got {output_env[name]}, expected {expected_value}"
 
-        # relatedImages count must match
-        assert len(output['spec']['relatedImages']) == len(expected['spec']['relatedImages'])
+            # No build or stage registry URIs should remain
+            build_registries = {'quay.io', 'registry.stage.redhat.io'}
+            for name, value in output_env.items():
+                if value and name.startswith('RELATED_IMAGE_'):
+                    registry = value.split('/')[0]
+                    assert registry not in build_registries, f"Unreplaced build/stage registry in {name}: {value}"
+
+            # relatedImages count must match
+            assert len(output['spec']['relatedImages']) == len(expected['spec']['relatedImages'])
+
+        finally:
+            _cleanup_worktree(rbc_clone, input_dir)
+            _cleanup_worktree(rbc_clone, output_dir)
