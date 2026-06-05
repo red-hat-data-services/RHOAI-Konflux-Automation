@@ -397,9 +397,16 @@ class bundle_processor:
                 package: "vllm"                              # package name to find in the SBOM
                 suffix: "_UPSTREAM_VERSION"                   # appended to each env var name
 
-        For each env var, the image URI is resolved from the operands map, the SBOM
-        is downloaded, and the package's versionInfo is extracted. A new env var is
-        created with the name "{env_var}{suffix}" and the version as its value.
+        For each env var, the image URI is resolved from the operands map or
+        additional images, the SBOM is downloaded via cosign, and the package's
+        versionInfo is extracted. A new env var is created with the name
+        "{env_var}{suffix}" and the version as its value.
+
+        Prerequisites:
+            Registry auth must be configured before calling this method (e.g.,
+            `skopeo login registry.redhat.io`). The SBOM download uses cosign
+            and skopeo, which read credentials from ~/.docker/config.json or
+            the containers auth config.
 
         Returns:
             List of env var dicts ({'name': ..., 'value': ...}) to inject into the CSV,
