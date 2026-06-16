@@ -154,8 +154,12 @@ class operator_processor:
 
         # Error handling
         if missing_components:
-            LOGGER.error(f'{len(missing_components)} components are missing from the git_labels_meta: {missing_components}')
-            LOGGER.error("Please verify that these components exist in bundle-patch.yaml. If any component has been offboarded and is no longer required, remove its entry from manifests-config.yaml.")
+            LOGGER.error(f'{len(missing_components)} component(s) in manifests-config.yaml have no matching entry in git_labels_meta: {missing_components}')
+            LOGGER.error("This means the corresponding image(s) in bundle-patch.yaml do not have git.url/git.commit labels in their OCI metadata.")
+            LOGGER.error("Possible causes:")
+            LOGGER.error("  1. The component image was not built with git labels — rebuild it via the Konflux pipeline to embed git.url and git.commit labels.")
+            LOGGER.error("  2. The component has been offboarded — remove its entry from manifests-config.yaml.")
+            LOGGER.error("  3. The component name in manifests-config.yaml does not match the component name derived from the image in bundle-patch.yaml.")
             sys.exit(1)
 
         if missing_git_labels:
