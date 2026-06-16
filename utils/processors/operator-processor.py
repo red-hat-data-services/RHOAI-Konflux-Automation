@@ -118,6 +118,8 @@ class operator_processor:
         missing_git_labels = []
         missing_components = []
 
+        errors = self.git_labels_meta.get('errors', {})
+
         LOGGER.info("Updating git metadata for operator components...")
         for component, manifest_config in self.manifest_config_dict['map'].items():
             # Skip branch-based components
@@ -128,7 +130,13 @@ class operator_processor:
             # Check if component exists in git_labels_meta
             if component not in self.git_labels_meta['map']:
                 missing_components.append(component)
-                LOGGER.warning(f"  Component '{component}' not found in git_labels_meta.")
+                error_reason = errors.get(component, 'unknown')
+                if error_reason == 'missing_signature':
+                    LOGGER.warning(f"  Component '{component}' skipped: image is not signed with cosign.")
+                elif error_reason == 'missing_image':
+                    LOGGER.warning(f"  Component '{component}' skipped: image tag not found in registry.")
+                else:
+                    LOGGER.warning(f"  Component '{component}' not found in git_labels_meta.")
                 continue
 
             # Get git metadata
@@ -143,7 +151,7 @@ class operator_processor:
                 LOGGER.info(f"  Metadata for component '{component}' updated successfully.")
             else:
                 missing_git_labels.append(component)
-                LOGGER.warning(f"  Component '{component}' is missing git labels.")
+                LOGGER.warning(f"  Component '{component}' has image with missing git.url/git.commit labels.")
 
         LOGGER.info("Adding git metadata for operator components...")
         self.manifest_config_dict['additional_meta'] = {}
@@ -154,16 +162,24 @@ class operator_processor:
 
         # Error handling
         if missing_components:
-            LOGGER.error(f'{len(missing_components)} component(s) in manifests-config.yaml have no matching entry in git_labels_meta: {missing_components}')
-            LOGGER.error("This means the corresponding image(s) in bundle-patch.yaml do not have git.url/git.commit labels in their OCI metadata.")
-            LOGGER.error("Possible causes:")
-            LOGGER.error("  1. The component image was not built with git labels — rebuild it via the Konflux pipeline to embed git.url and git.commit labels.")
-            LOGGER.error("  2. The component has been offboarded — remove its entry from manifests-config.yaml.")
-            LOGGER.error("  3. The component name in manifests-config.yaml does not match the component name derived from the image in bundle-patch.yaml.")
+            unsigned = [comp for comp in missing_components if errors.get(comp) == 'missing_signature']
+            not_found = [comp for comp in missing_components if errors.get(comp) == 'missing_image']
+            other = [comp for comp in missing_components if errors.get(comp) not in ('missing_signature', 'missing_image')]
+
+            if unsigned:
+                LOGGER.error(f"Cosign signature missing for {len(unsigned)} component(s): {unsigned}")
+                LOGGER.error("Sign these images with cosign so the processor can verify and extract labels.")
+            if not_found:
+                LOGGER.error(f"Image tag not found for {len(not_found)} component(s): {not_found}")
+                LOGGER.error("Verify that these images exist in the registry with the expected tag.")
+            if other:
+                LOGGER.error(f"No git metadata found for {len(other)} component(s): {other}")
+                LOGGER.error("Check that component names in manifests-config.yaml match the image names in bundle-patch.yaml.")
             sys.exit(1)
 
         if missing_git_labels:
-            LOGGER.error(f"git.url and git.commit labels missing/empty for {len(missing_git_labels)} component(s): {missing_git_labels}")
+            LOGGER.error(f"git.url and/or git.commit labels missing in image metadata for {len(missing_git_labels)} component(s): {missing_git_labels}")
+            LOGGER.error("Rebuild these images with git.url and git.commit labels.")
             sys.exit(1)
 
     def sync_yamls_from_bundle_patch(self):

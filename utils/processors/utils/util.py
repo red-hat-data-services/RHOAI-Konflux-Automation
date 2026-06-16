@@ -197,8 +197,9 @@ def fetch_latest_images_and_git_metadata(
         - git_labels_meta: Dict with 'map' key containing component git metadata
     """
     latest_images = []
-    git_labels_meta = {'map': {}}
+    git_labels_meta = {'map': {}, 'errors': {}}
     missing_images = []
+    missing_signatures = []
     missing_git_labels = []
 
     for image_entry in image_entries:
@@ -226,59 +227,70 @@ def fetch_latest_images_and_git_metadata(
         if not tags:
             LOGGER.warning(f"'{image_tag}' tag not found for image: '{repo}'")
             missing_images.append(repo)
+            git_labels_meta['errors'][component_name] = 'missing_image'
             continue
 
+        signed_tag = None
         for tag in tags:
             sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
             signature = qc.get_tag_details(repo, sig_tag)
 
             if signature:
-                value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
-                # Create a copy to avoid mutating the original entry in operands_map_dict.
-                # Shared references cause jsonupdate_ng to produce incorrect merge results.
-                updated_entry = dict(image_entry)
-                updated_entry['value'] = DoubleQuotedScalarString(value)
-                latest_images.append(updated_entry)
-
-                manifest_digest = tag["manifest_digest"]
-                LOGGER.debug(f'manifest_digest = {manifest_digest}')
-
-                # The manifest list does not get the image labels, so we need to fetch the manifest digest to retrieve the git labels
-                if tag['is_manifest_list']:
-                    LOGGER.debug('Manifest list detected. Fetching manifest digest to retrieve git labels...')
-                    image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
-                    if image_manifest_digests:
-                        manifest_digest = image_manifest_digests[0]
-                        LOGGER.debug(f'Manifest_digest used to retrieve git labels: {manifest_digest}')
-
-                # Get git labels
-                labels = qc.get_git_labels(repo, manifest_digest)
-                labels = {label['key']:label['value'] for label in labels if label['value']}
-
-                # Extract git URL and commit with safe defaults
-                git_url = labels.get(CONSTANTS.GIT_URL_LABEL_KEY, '')
-                git_commit = labels.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')
-
-                # Apply GitHub overrides if enabled and available
-                if use_github_override:
-                    if CONSTANTS.GITHUB_URL_LABEL_KEY in labels:
-                        git_url = labels[CONSTANTS.GITHUB_URL_LABEL_KEY]
-                        LOGGER.debug("Using github.url override")
-                    if CONSTANTS.GITHUB_COMMIT_LABEL_KEY in labels:
-                        git_commit = labels[CONSTANTS.GITHUB_COMMIT_LABEL_KEY]
-                        LOGGER.debug("Using github.commit override")
-
-                # Store git metadata
-                git_labels_meta['map'][component_name] = {}
-                git_labels_meta['map'][component_name][CONSTANTS.GIT_URL_LABEL_KEY] = git_url
-                git_labels_meta['map'][component_name][CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
-                LOGGER.debug(f"Collected git labels for '{component_name}': git.url='{git_url}', git.commit='{git_commit}'")
-
-                # Collect repo with missing git_url or git_commit
-                if not git_url or not git_commit:
-                    missing_git_labels.append(repo)
-
+                signed_tag = tag
                 break
+
+        if not signed_tag:
+            LOGGER.warning(f"  No cosign signature found for '{component_name}'. Image exists but is not signed.")
+            missing_signatures.append(repo)
+            git_labels_meta['errors'][component_name] = 'missing_signature'
+            continue
+
+        tag = signed_tag
+        value = f'{registry}/{org}/{repo}@{tag["manifest_digest"]}'
+        # Create a copy to avoid mutating the original entry in operands_map_dict.
+        # Shared references cause jsonupdate_ng to produce incorrect merge results.
+        updated_entry = dict(image_entry)
+        updated_entry['value'] = DoubleQuotedScalarString(value)
+        latest_images.append(updated_entry)
+
+        manifest_digest = tag["manifest_digest"]
+        LOGGER.debug(f'manifest_digest = {manifest_digest}')
+
+        # The manifest list does not get the image labels, so we need to fetch the manifest digest to retrieve the git labels
+        if tag['is_manifest_list']:
+            LOGGER.debug('Manifest list detected. Fetching manifest digest to retrieve git labels...')
+            image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
+            if image_manifest_digests:
+                manifest_digest = image_manifest_digests[0]
+                LOGGER.debug(f'Manifest_digest used to retrieve git labels: {manifest_digest}')
+
+        # Get git labels
+        labels = qc.get_git_labels(repo, manifest_digest)
+        labels = {label['key']:label['value'] for label in labels if label['value']}
+
+        # Extract git URL and commit with safe defaults
+        git_url = labels.get(CONSTANTS.GIT_URL_LABEL_KEY, '')
+        git_commit = labels.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')
+
+        # Apply GitHub overrides if enabled and available
+        if use_github_override:
+            if CONSTANTS.GITHUB_URL_LABEL_KEY in labels:
+                git_url = labels[CONSTANTS.GITHUB_URL_LABEL_KEY]
+                LOGGER.debug("Using github.url override")
+            if CONSTANTS.GITHUB_COMMIT_LABEL_KEY in labels:
+                git_commit = labels[CONSTANTS.GITHUB_COMMIT_LABEL_KEY]
+                LOGGER.debug("Using github.commit override")
+
+        # Store git metadata
+        git_labels_meta['map'][component_name] = {}
+        git_labels_meta['map'][component_name][CONSTANTS.GIT_URL_LABEL_KEY] = git_url
+        git_labels_meta['map'][component_name][CONSTANTS.GIT_COMMIT_LABEL_KEY] = git_commit
+        LOGGER.debug(f"Collected git labels for '{component_name}': git.url='{git_url}', git.commit='{git_commit}'")
+
+        # Collect repo with missing git_url or git_commit
+        if not git_url or not git_commit:
+            missing_git_labels.append(repo)
+            git_labels_meta['errors'][component_name] = 'missing_git_labels'
 
     # Exit on missing images
     if missing_images:
@@ -286,10 +298,16 @@ def fetch_latest_images_and_git_metadata(
         LOGGER.error(f"Please verify that these images exist in the Quay.io repository with the image tag: '{image_tag}'")
         sys.exit(1)
 
+    # Exit on missing cosign signatures
+    if missing_signatures:
+        LOGGER.error(f'Cosign signature missing for following components: {missing_signatures}')
+        LOGGER.error(f"Please sign these images with cosign so the processor can verify and extract labels.")
+        sys.exit(1)
+
     # Exit on missing git labels
     if missing_git_labels:
         LOGGER.error(f'git.url and/or git.commit labels missing/empty for following components: {missing_git_labels}')
-        LOGGER.error(f"Please check that the required git labels are present for the images with the image tag: '{image_tag}'")
+        LOGGER.error(f"Please rebuild these images with git.url and git.commit labels in their OCI metadata.")
         sys.exit(1)
 
     LOGGER.info("Processing completed successfully. Returning latest images and git labels metadata.")
