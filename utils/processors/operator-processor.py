@@ -1,7 +1,9 @@
 import sys
 import json
 import copy
+import yaml
 from jsonupdate_ng import jsonupdate_ng
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import argparse
 from logger.logger import getLogger
 import utils.util as util
@@ -60,6 +62,12 @@ class operator_processor:
         self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(
             self.operands_map_dict['relatedImages'], self.rhoai_version
         )
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Processing modular operators...")
+        LOGGER.info("=============================================================================")
+        self.process_modular_operators()
 
         if self.latest_images:
             LOGGER.info("")
@@ -180,6 +188,104 @@ class operator_processor:
         if missing_git_labels:
             LOGGER.error(f"git.url and/or git.commit labels missing in image metadata for {len(missing_git_labels)} component(s): {missing_git_labels}")
             LOGGER.error("Rebuild these images with git.url and git.commit labels.")
+            sys.exit(1)
+
+    def process_modular_operators(self):
+        """
+        For each component in manifest_config with is_modular=True, fetches
+        the modular operator's build/manifests-config.yaml from its git repo
+        and overrides matching entries in latest_images and git_labels_meta.
+        """
+        modular_components = {
+            name: config for name, config in self.manifest_config_dict['map'].items()
+            if config.get('is_modular')
+        }
+
+        if not modular_components:
+            LOGGER.info("No modular operators found. Skipping.")
+            return
+
+        LOGGER.info(f"Found {len(modular_components)} modular operator(s): {list(modular_components.keys())}")
+
+        errors = []
+
+        for component_name, config in modular_components.items():
+            LOGGER.info(f"  Processing modular operator: {component_name}")
+
+            modular_git_meta = self.git_labels_meta['map'].get(component_name)
+            if not modular_git_meta:
+                errors.append(f"Modular operator '{component_name}' not found in git_labels_meta. Cannot fetch its manifests-config.yaml.")
+                LOGGER.error(f"  Modular operator '{component_name}' not found in git_labels_meta.")
+                continue
+
+            git_url = modular_git_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')
+            git_commit = modular_git_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')
+
+            if not git_url or not git_commit:
+                errors.append(f"Modular operator '{component_name}' is missing git.url or git.commit.")
+                LOGGER.error(f"  Modular operator '{component_name}' is missing git.url or git.commit.")
+                continue
+
+            LOGGER.info(f"  Fetching {CONSTANTS.MANIFESTS_CONFIG_PATH} from {git_url} @ {git_commit}")
+            try:
+                remote_content = util.fetch_file_data_from_github(git_url, git_commit, CONSTANTS.MANIFESTS_CONFIG_PATH)
+            except Exception as e:
+                errors.append(f"Failed to fetch {CONSTANTS.MANIFESTS_CONFIG_PATH} for modular operator '{component_name}' from {git_url} @ {git_commit}: {e}")
+                LOGGER.error(f"  Failed to fetch remote manifests-config.yaml for '{component_name}': {e}")
+                continue
+
+            remote_config = yaml.safe_load(remote_content)
+            LOGGER.debug(f"  Remote manifests-config: {json.dumps(remote_config, indent=4, default=str)}")
+
+            if not remote_config or 'map' not in remote_config:
+                errors.append(f"Remote manifests-config.yaml for modular operator '{component_name}' is empty or missing 'map' section.")
+                LOGGER.error(f"  Remote manifests-config.yaml for '{component_name}' is empty or missing 'map' section.")
+                continue
+
+            override_count = 0
+            for sub_component, sub_config in remote_config['map'].items():
+                missing_fields = [f for f in ['image', CONSTANTS.GIT_URL_LABEL_KEY, CONSTANTS.GIT_COMMIT_LABEL_KEY] if not sub_config.get(f)]
+                if missing_fields:
+                    errors.append(f"Modular operator '{component_name}', sub-component '{sub_component}': missing required field(s): {missing_fields}")
+                    LOGGER.error(f"    Sub-component '{sub_component}' is missing required field(s): {missing_fields}")
+                    continue
+
+                image_value = sub_config['image']
+                parsed = util.parse_image_value(image_value)
+                matched_component = parsed['component_name']
+
+                LOGGER.info(f"    Overriding '{matched_component}' from modular operator '{component_name}'")
+
+                matched = False
+                for img_entry in self.latest_images:
+                    entry_parsed = util.parse_image_value(str(img_entry['value']))
+                    if entry_parsed['component_name'] == matched_component:
+                        LOGGER.debug(f"      Image digest: {entry_parsed['digest']} -> {parsed['digest']}")
+                        img_entry['value'] = DoubleQuotedScalarString(image_value)
+                        matched = True
+                        break
+
+                if not matched:
+                    LOGGER.warning(f"    No matching entry found in latest_images for '{matched_component}'")
+
+                git_url_override = sub_config[CONSTANTS.GIT_URL_LABEL_KEY]
+                git_commit_override = sub_config[CONSTANTS.GIT_COMMIT_LABEL_KEY]
+                old_meta = self.git_labels_meta['map'].get(matched_component, {})
+                LOGGER.debug(f"      git.url: {old_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')} -> {git_url_override}")
+                LOGGER.debug(f"      git.commit: {old_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')} -> {git_commit_override}")
+                self.git_labels_meta['map'][matched_component] = {
+                    CONSTANTS.GIT_URL_LABEL_KEY: git_url_override,
+                    CONSTANTS.GIT_COMMIT_LABEL_KEY: git_commit_override
+                }
+
+                override_count += 1
+
+            LOGGER.info(f"  Modular operator '{component_name}': {override_count} component(s) overridden")
+
+        if errors:
+            LOGGER.error(f"{len(errors)} error(s) encountered while processing modular operators:")
+            for error in errors:
+                LOGGER.error(f"  - {error}")
             sys.exit(1)
 
     def sync_yamls_from_bundle_patch(self):
