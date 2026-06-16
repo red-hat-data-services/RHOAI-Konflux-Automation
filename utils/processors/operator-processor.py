@@ -13,7 +13,7 @@ LOGGER = getLogger('processor')
 
 class operator_processor:
 
-    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
+    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, enable_modular_processing:bool=False):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Operator Processor")
         LOGGER.info("=============================================================================")
@@ -24,8 +24,10 @@ class operator_processor:
         self.rhoai_version = rhoai_version
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
+        self.enable_modular_processing = enable_modular_processing
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"push_pipeline_operation: {self.push_pipeline_operation}")
+        LOGGER.info(f"enable_modular_processing: {self.enable_modular_processing}")
         LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
         LOGGER.info(f"operands_map_path: {self.operands_map_path}")
         LOGGER.info(f"nudging_yaml_path: {self.nudging_yaml_path}")
@@ -63,11 +65,15 @@ class operator_processor:
             self.operands_map_dict['relatedImages'], self.rhoai_version
         )
 
-        LOGGER.info("")
-        LOGGER.info("=============================================================================")
-        LOGGER.info("Processing modular operators...")
-        LOGGER.info("=============================================================================")
-        self.process_modular_operators()
+        if self.enable_modular_processing:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Processing modular operators...")
+            LOGGER.info("=============================================================================")
+            self.process_modular_operators()
+        else:
+            LOGGER.info("")
+            LOGGER.info("Modular operator processing is disabled. Skipping.")
 
         if self.latest_images:
             LOGGER.info("")
@@ -361,10 +367,12 @@ if __name__ == '__main__':
                         help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
+    parser.add_argument('--enable-modular-processing', required=False, action='store_true', default=False,
+                        help='Enable modular operator processing to fetch and override image digests and git metadata from modular operator repos', dest='enable_modular_processing')
     args = parser.parse_args()
 
     if args.operation.lower() == 'process-operator-yamls':
-        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path)
+        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, enable_modular_processing=args.enable_modular_processing)
         processor.process()
 
     # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
