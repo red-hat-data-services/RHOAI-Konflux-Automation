@@ -198,9 +198,12 @@ class operator_processor:
 
     def process_modular_operators(self):
         """
-        For each component in manifest_config with is_modular=True, fetches
-        the modular operator's build/manifests-config.yaml from its git repo
-        and overrides matching entries in latest_images and git_labels_meta.
+        Processes modular operators in three phases:
+        1. Fetch: retrieve manifests-config.yaml from each modular operator's repo
+        2. Conflict detection: ensure no image is claimed by multiple modular operators
+        3. Apply: override image digests and git metadata for each sub-component
+
+        Components with ref_type=branch are skipped (no image to override).
         """
         modular_components = {
             name: config for name, config in self.manifest_config_dict['map'].items()
@@ -213,85 +216,162 @@ class operator_processor:
 
         LOGGER.info(f"Found {len(modular_components)} modular operator(s): {list(modular_components.keys())}")
 
-        errors = []
+        errors = {
+            'invalid_modular_config': [],
+            'not_in_operands_map': [],
+            'fetch_failed': {},
+            'invalid_remote_config': [],
+            'conflicts': {},
+            'missing_fields': {},
+        }
 
-        for component_name, config in modular_components.items():
+        invalid = [name for name, config in modular_components.items() if config.get('ref_type') == 'branch']
+        if invalid:
+            errors['invalid_modular_config'] = invalid
+            for name in invalid:
+                del modular_components[name]
+
+        remote_configs = self._fetch_remote_configs(modular_components, errors)
+
+        conflicts = self._detect_image_conflicts(remote_configs)
+        if conflicts:
+            errors['conflicts'] = conflicts
+        else:
+            for component_name, remote_config in remote_configs.items():
+                self._apply_modular_overrides(component_name, remote_config, errors)
+
+        self._report_modular_errors(errors)
+
+    def _fetch_remote_configs(self, modular_components, errors):
+        """Fetch and validate manifests-config.yaml from each modular operator's repo."""
+        remote_configs = {}
+
+        for component_name in modular_components:
             LOGGER.info(f"  Processing modular operator: {component_name}")
 
             modular_git_meta = self.git_labels_meta['map'].get(component_name)
             if not modular_git_meta:
-                errors.append(f"Modular operator '{component_name}' not found in git_labels_meta. Cannot fetch its manifests-config.yaml.")
-                LOGGER.error(f"  Modular operator '{component_name}' not found in git_labels_meta.")
+                errors['not_in_operands_map'].append(component_name)
                 continue
 
-            git_url = modular_git_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')
-            git_commit = modular_git_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')
-
-            if not git_url or not git_commit:
-                errors.append(f"Modular operator '{component_name}' is missing git.url or git.commit.")
-                LOGGER.error(f"  Modular operator '{component_name}' is missing git.url or git.commit.")
-                continue
+            git_url = modular_git_meta[CONSTANTS.GIT_URL_LABEL_KEY]
+            git_commit = modular_git_meta[CONSTANTS.GIT_COMMIT_LABEL_KEY]
 
             LOGGER.info(f"  Fetching {CONSTANTS.MANIFESTS_CONFIG_PATH} from {git_url} @ {git_commit}")
             try:
                 remote_content = util.fetch_file_data_from_github(git_url, git_commit, CONSTANTS.MANIFESTS_CONFIG_PATH)
             except Exception as e:
-                errors.append(f"Failed to fetch {CONSTANTS.MANIFESTS_CONFIG_PATH} for modular operator '{component_name}' from {git_url} @ {git_commit}: {e}")
-                LOGGER.error(f"  Failed to fetch remote manifests-config.yaml for '{component_name}': {e}")
+                errors['fetch_failed'][component_name] = str(e)
                 continue
 
             remote_config = yaml.safe_load(remote_content)
             LOGGER.debug(f"  Remote manifests-config: {json.dumps(remote_config, indent=4, default=str)}")
 
             if not remote_config or 'map' not in remote_config:
-                errors.append(f"Remote manifests-config.yaml for modular operator '{component_name}' is empty or missing 'map' section.")
-                LOGGER.error(f"  Remote manifests-config.yaml for '{component_name}' is empty or missing 'map' section.")
+                errors['invalid_remote_config'].append(component_name)
                 continue
 
-            override_count = 0
+            remote_configs[component_name] = remote_config
+
+        return remote_configs
+
+    def _detect_image_conflicts(self, remote_configs):
+        """Check that no image is claimed by multiple modular operators. Returns {image: [owners]} for conflicts."""
+        image_ownership = {}
+        for component_name, remote_config in remote_configs.items():
             for sub_component, sub_config in remote_config['map'].items():
-                missing_fields = [f for f in ['image', CONSTANTS.GIT_URL_LABEL_KEY, CONSTANTS.GIT_COMMIT_LABEL_KEY] if not sub_config.get(f)]
-                if missing_fields:
-                    errors.append(f"Modular operator '{component_name}', sub-component '{sub_component}': missing required field(s): {missing_fields}")
-                    LOGGER.error(f"    Sub-component '{sub_component}' is missing required field(s): {missing_fields}")
+                if sub_config.get('ref_type') == 'branch':
                     continue
-
-                image_value = sub_config['image']
+                image_value = sub_config.get('image', '')
+                if not image_value:
+                    continue
                 parsed = util.parse_image_value(image_value)
-                matched_component = parsed['component_name']
+                image_ownership.setdefault(parsed['component_name'], []).append(component_name)
 
-                LOGGER.info(f"    Overriding '{matched_component}' from modular operator '{component_name}'")
+        return {image: owners for image, owners in image_ownership.items() if len(owners) > 1}
 
-                matched = False
-                for img_entry in self.latest_images:
-                    entry_parsed = util.parse_image_value(str(img_entry['value']))
-                    if entry_parsed['component_name'] == matched_component:
-                        LOGGER.debug(f"      Image digest: {entry_parsed['digest']} -> {parsed['digest']}")
-                        img_entry['value'] = DoubleQuotedScalarString(image_value)
-                        matched = True
-                        break
+    def _apply_modular_overrides(self, component_name, remote_config, errors):
+        """Apply image digest and git metadata overrides from a single modular operator's config."""
+        override_count = 0
 
-                if not matched:
-                    LOGGER.warning(f"    No matching entry found in latest_images for '{matched_component}'")
+        for sub_component, sub_config in remote_config['map'].items():
+            if sub_config.get('ref_type') == 'branch':
+                LOGGER.info(f"    Skipping sub-component '{sub_component}' (ref_type=branch)")
+                continue
 
-                git_url_override = sub_config[CONSTANTS.GIT_URL_LABEL_KEY]
-                git_commit_override = sub_config[CONSTANTS.GIT_COMMIT_LABEL_KEY]
-                old_meta = self.git_labels_meta['map'].get(matched_component, {})
-                LOGGER.debug(f"      git.url: {old_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')} -> {git_url_override}")
-                LOGGER.debug(f"      git.commit: {old_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')} -> {git_commit_override}")
-                self.git_labels_meta['map'][matched_component] = {
-                    CONSTANTS.GIT_URL_LABEL_KEY: git_url_override,
-                    CONSTANTS.GIT_COMMIT_LABEL_KEY: git_commit_override
-                }
+            missing_fields = [f for f in ['image', CONSTANTS.GIT_URL_LABEL_KEY, CONSTANTS.GIT_COMMIT_LABEL_KEY] if not sub_config.get(f)]
+            if missing_fields:
+                errors['missing_fields'][f"{component_name} -> {sub_component}"] = missing_fields
+                continue
 
-                override_count += 1
+            image_value = sub_config['image']
+            parsed = util.parse_image_value(image_value)
+            matched_component = parsed['component_name']
 
-            LOGGER.info(f"  Modular operator '{component_name}': {override_count} component(s) overridden")
+            LOGGER.info(f"    Overriding '{matched_component}' from modular operator '{component_name}'")
 
-        if errors:
-            LOGGER.error(f"{len(errors)} error(s) encountered while processing modular operators:")
-            for error in errors:
-                LOGGER.error(f"  - {error}")
+            matched = False
+            for img_entry in self.latest_images:
+                entry_parsed = util.parse_image_value(str(img_entry['value']))
+                if entry_parsed['component_name'] == matched_component:
+                    LOGGER.debug(f"      Image digest: {entry_parsed['digest']} -> {parsed['digest']}")
+                    img_entry['value'] = DoubleQuotedScalarString(image_value)
+                    matched = True
+                    break
+
+            if not matched:
+                errors['not_in_operands_map'].append(matched_component)
+                continue
+
+            old_meta = self.git_labels_meta['map'].get(matched_component, {})
+            LOGGER.debug(f"      git.url: {old_meta.get(CONSTANTS.GIT_URL_LABEL_KEY, '')} -> {sub_config[CONSTANTS.GIT_URL_LABEL_KEY]}")
+            LOGGER.debug(f"      git.commit: {old_meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, '')} -> {sub_config[CONSTANTS.GIT_COMMIT_LABEL_KEY]}")
+            self.git_labels_meta['map'][matched_component] = {
+                CONSTANTS.GIT_URL_LABEL_KEY: sub_config[CONSTANTS.GIT_URL_LABEL_KEY],
+                CONSTANTS.GIT_COMMIT_LABEL_KEY: sub_config[CONSTANTS.GIT_COMMIT_LABEL_KEY]
+            }
+
+            override_count += 1
+
+        LOGGER.info(f"  Modular operator '{component_name}': {override_count} component(s) overridden")
+
+    def _report_modular_errors(self, errors):
+        """Report grouped errors from modular operator processing. Exits if any errors found."""
+        has_errors = False
+
+        if errors['invalid_modular_config']:
+            has_errors = True
+            LOGGER.error(f"Component(s) have both is_modular=true and ref_type=branch, which is invalid: {errors['invalid_modular_config']}. "
+                         f"Modular operators require an image in Quay to resolve git metadata. Remove is_modular or change ref_type to image.")
+
+        if errors['not_in_operands_map']:
+            has_errors = True
+            LOGGER.error(f"Component(s) not found in operands-map relatedImages: {errors['not_in_operands_map']}. "
+                         f"Ensure these are registered in bundle-patch.yaml.")
+
+        if errors['fetch_failed']:
+            has_errors = True
+            LOGGER.error(f"Failed to fetch manifests-config.yaml for {len(errors['fetch_failed'])} modular operator(s):")
+            for component, reason in errors['fetch_failed'].items():
+                LOGGER.error(f"  - {component}: {reason}")
+
+        if errors['invalid_remote_config']:
+            has_errors = True
+            LOGGER.error(f"Remote manifests-config.yaml is empty or missing 'map' section for: {errors['invalid_remote_config']}")
+
+        if errors['conflicts']:
+            has_errors = True
+            LOGGER.error("Image conflict(s) detected across modular operators. Each image must be owned by exactly one modular operator:")
+            for image, owners in errors['conflicts'].items():
+                LOGGER.error(f"  - Image '{image}' is claimed by: {owners}")
+
+        if errors['missing_fields']:
+            has_errors = True
+            LOGGER.error(f"Required field(s) missing in {len(errors['missing_fields'])} sub-component(s):")
+            for key, fields in errors['missing_fields'].items():
+                LOGGER.error(f"  - {key}: {fields}")
+
+        if has_errors:
             sys.exit(1)
 
     def sync_yamls_from_bundle_patch(self):
