@@ -147,14 +147,17 @@ class TestDownloadSbomAllArches:
         assert len(result) == 2
 
     @patch('utils.sbom.subprocess.run')
-    def test_non_manifest_list_returns_single(self, mock_run):
-        """If image is not a manifest list, return SBOM keyed by 'single'."""
+    def test_non_manifest_list_returns_arch_key(self, mock_run):
+        """If image is not a manifest list, return SBOM keyed by its architecture."""
         sbom = make_sbom([make_package('vllm', '0.17.1')])
         single_manifest = {'mediaType': 'application/vnd.oci.image.manifest.v1+json'}
+        inspect_result = {'Architecture': 'amd64'}
 
         def side_effect(cmd, **kwargs):
-            if cmd[0] == 'skopeo':
+            if cmd[0] == 'skopeo' and '--raw' in cmd:
                 return mock_subprocess_result(stdout=json.dumps(single_manifest))
+            if cmd[0] == 'skopeo' and '--no-tags' in cmd:
+                return mock_subprocess_result(stdout=json.dumps(inspect_result))
             if cmd[0] == 'cosign':
                 return mock_subprocess_result(stdout=json.dumps(sbom))
             return mock_subprocess_result(returncode=1)
@@ -162,7 +165,7 @@ class TestDownloadSbomAllArches:
         mock_run.side_effect = side_effect
         result = download_sbom(IMAGE)
 
-        assert 'single' in result
+        assert 'amd64' in result
         assert len(result) == 1
 
     @patch('utils.sbom.subprocess.run')
@@ -206,34 +209,39 @@ class TestDownloadSbomAllArches:
 class TestGetPackageInfo:
 
     @patch('utils.sbom.subprocess.run')
-    def test_returns_matching_package(self, mock_run):
+    def test_returns_versions_by_arch(self, mock_run):
         sbom = make_sbom([
             make_package('python', '3.12.0'),
             make_package('vllm', '0.17.1+rhaiv.0'),
         ])
         single_manifest = {'mediaType': 'application/vnd.oci.image.manifest.v1+json'}
+        inspect_result = {'Architecture': 'amd64'}
 
         def side_effect(cmd, **kwargs):
-            if cmd[0] == 'skopeo':
+            if cmd[0] == 'skopeo' and '--raw' in cmd:
                 return mock_subprocess_result(stdout=json.dumps(single_manifest))
+            if cmd[0] == 'skopeo' and '--no-tags' in cmd:
+                return mock_subprocess_result(stdout=json.dumps(inspect_result))
             if cmd[0] == 'cosign':
                 return mock_subprocess_result(stdout=json.dumps(sbom))
             return mock_subprocess_result(returncode=1)
 
         mock_run.side_effect = side_effect
-        pkg = get_package_info(IMAGE, 'vllm')
+        versions = get_package_info(IMAGE, 'vllm')
 
-        assert pkg['name'] == 'vllm'
-        assert pkg['versionInfo'] == '0.17.1+rhaiv.0'
+        assert versions == {'amd64': '0.17.1+rhaiv.0'}
 
     @patch('utils.sbom.subprocess.run')
     def test_raises_when_package_not_found(self, mock_run):
         sbom = make_sbom([make_package('python', '3.12.0')])
         single_manifest = {'mediaType': 'application/vnd.oci.image.manifest.v1+json'}
+        inspect_result = {'Architecture': 'amd64'}
 
         def side_effect(cmd, **kwargs):
-            if cmd[0] == 'skopeo':
+            if cmd[0] == 'skopeo' and '--raw' in cmd:
                 return mock_subprocess_result(stdout=json.dumps(single_manifest))
+            if cmd[0] == 'skopeo' and '--no-tags' in cmd:
+                return mock_subprocess_result(stdout=json.dumps(inspect_result))
             if cmd[0] == 'cosign':
                 return mock_subprocess_result(stdout=json.dumps(sbom))
             return mock_subprocess_result(returncode=1)
@@ -259,13 +267,13 @@ class TestGetPackageInfo:
             return mock_subprocess_result(returncode=1)
 
         mock_run.side_effect = side_effect
-        pkg = get_package_info(IMAGE, 'vllm')
+        versions = get_package_info(IMAGE, 'vllm')
 
-        assert pkg['name'] == 'vllm'
-        assert pkg['versionInfo'] == '0.17.1+rhaiv.0'
+        assert versions == {'amd64': '0.17.1+rhaiv.0', 'arm64': '0.17.1+rhaiv.0'}
 
     @patch('utils.sbom.subprocess.run')
-    def test_inconsistent_versions_raises(self, mock_run):
+    def test_different_versions_across_arches(self, mock_run):
+        """Different versions across arches is now valid — returns both."""
         amd64_sbom = make_sbom([make_package('vllm', '0.17.1+rhaiv.0')])
         arm64_sbom = make_sbom([make_package('vllm', '0.18.0+rhaiv.0')])
         manifest_list = make_manifest_list([('amd64', 'aaa'), ('arm64', 'bbb')])
@@ -280,13 +288,13 @@ class TestGetPackageInfo:
             return mock_subprocess_result(returncode=1)
 
         mock_run.side_effect = side_effect
+        versions = get_package_info(IMAGE, 'vllm')
 
-        with pytest.raises(ValueError, match='inconsistent versions'):
-            get_package_info(IMAGE, 'vllm')
+        assert versions == {'amd64': '0.17.1+rhaiv.0', 'arm64': '0.18.0+rhaiv.0'}
 
     @patch('utils.sbom.subprocess.run')
     def test_package_missing_in_one_arch(self, mock_run):
-        """Package exists in amd64 but not arm64 — should still return it."""
+        """Package exists in amd64 but not arm64 — returns only amd64."""
         amd64_sbom = make_sbom([make_package('vllm', '0.17.1')])
         arm64_sbom = make_sbom([make_package('python', '3.12.0')])
         manifest_list = make_manifest_list([('amd64', 'aaa'), ('arm64', 'bbb')])
@@ -301,9 +309,9 @@ class TestGetPackageInfo:
             return mock_subprocess_result(returncode=1)
 
         mock_run.side_effect = side_effect
-        pkg = get_package_info(IMAGE, 'vllm')
+        versions = get_package_info(IMAGE, 'vllm')
 
-        assert pkg['name'] == 'vllm'
+        assert versions == {'amd64': '0.17.1'}
 
 
 # ============================================================================
@@ -362,19 +370,22 @@ class TestTagStripping:
         """get_package_info also strips tags (via download_sbom)."""
         sbom = make_sbom([make_package('vllm', '0.17.1')])
         single_manifest = {'mediaType': 'application/vnd.oci.image.manifest.v1+json'}
+        inspect_result = {'Architecture': 'amd64'}
 
         def side_effect(cmd, **kwargs):
-            if cmd[0] == 'skopeo':
+            if cmd[0] == 'skopeo' and '--raw' in cmd:
                 return mock_subprocess_result(stdout=json.dumps(single_manifest))
+            if cmd[0] == 'skopeo' and '--no-tags' in cmd:
+                return mock_subprocess_result(stdout=json.dumps(inspect_result))
             if cmd[0] == 'cosign':
                 return mock_subprocess_result(stdout=json.dumps(sbom))
             return mock_subprocess_result(returncode=1)
 
         mock_run.side_effect = side_effect
 
-        pkg = get_package_info('registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4@sha256:abc123', 'vllm')
+        versions = get_package_info('registry.redhat.io/rhaii/vllm-cuda-rhel9:3.4@sha256:abc123', 'vllm')
 
-        assert pkg['name'] == 'vllm'
+        assert versions == {'amd64': '0.17.1'}
         cosign_calls = [c for c in mock_run.call_args_list if c[0][0][0] == 'cosign']
         for call in cosign_calls:
             assert ':3.4@' not in call[0][0][3]
@@ -432,11 +443,12 @@ class TestLiveGetPackageInfo:
     @live
     @pytest.mark.parametrize('variant', list(LIVE_IMAGES.keys()))
     def test_vllm_package_found(self, variant):
-        pkg = get_package_info(LIVE_IMAGES[variant], 'vllm')
+        versions = get_package_info(LIVE_IMAGES[variant], 'vllm')
 
-        assert pkg['name'] == 'vllm'
-        assert pkg['versionInfo']
-        assert '+' in pkg['versionInfo'] or pkg['versionInfo'].count('.') >= 2
+        assert len(versions) > 0
+        for arch, version in versions.items():
+            assert version
+            assert '.' in version
 
     @live
     def test_nonexistent_package_raises(self):

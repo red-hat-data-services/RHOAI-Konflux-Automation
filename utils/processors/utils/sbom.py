@@ -18,7 +18,7 @@ def download_sbom(image_uri: str, all_arches: bool = True) -> Union[Dict, Dict[s
 
     By default (all_arches=True), resolves each architecture-specific image in a
     manifest list and returns all of their SBOMs. For non-manifest-list images,
-    returns the single SBOM keyed by 'single'.
+    returns the single SBOM keyed by its architecture.
 
     With all_arches=False, returns a single SBOM. If the image is a manifest list,
     returns the SBOM attached at that level. If none exists, falls back to the first
@@ -74,7 +74,8 @@ def _download_sbom_all_arches(image_uri: str) -> Dict[str, Dict]:
     if not arch_digests:
         sbom = _cosign_download_sbom(image_uri)
         if sbom is not None:
-            return {'single': sbom}
+            arch = _get_image_arch(image_uri)
+            return {arch: sbom}
         raise RuntimeError(f"Failed to download SBOM for: {image_uri}")
 
     base_ref = image_uri.split('@')[0]
@@ -95,50 +96,40 @@ def _download_sbom_all_arches(image_uri: str) -> Dict[str, Dict]:
     return results
 
 
-def get_package_info(image_uri: str, package_name: str) -> Dict:
+def get_package_info(image_uri: str, package_name: str) -> Dict[str, str]:
     """
     Look up a package by exact name in the SBOM for a container image.
 
-    Downloads SBOMs for all architectures and returns the package dict for the
-    first arch that contains it. If multiple arches contain the package, verifies
-    that versionInfo is consistent across all of them.
+    Downloads SBOMs for all architectures and returns the package version
+    for each architecture that contains it.
 
     Args:
         image_uri: Full image reference with digest
         package_name: Exact package name to match (e.g., 'vllm')
 
     Returns:
-        The matching package dict from the SBOM (contains 'name', 'versionInfo',
-        'externalRefs', etc.)
+        Dict mapping architecture to versionInfo
+        (e.g., {'amd64': '0.18.0+rhaiv.7', 'arm64': '0.17.1+rhaiv.0'})
 
     Raises:
         RuntimeError: If the package is not found in any architecture's SBOM
-        ValueError: If the package version differs across architectures
     """
     sboms = download_sbom(image_uri)
 
-    found = {}
+    versions = {}
     for arch, sbom in sboms.items():
         for pkg in sbom.get('packages', []):
             if pkg.get('name') == package_name:
-                found[arch] = pkg
+                versions[arch] = pkg['versionInfo']
                 break
 
-    if not found:
+    if not versions:
         raise RuntimeError(
             f"Package '{package_name}' not found in SBOM for: {image_uri}"
         )
 
-    versions = {arch: pkg['versionInfo'] for arch, pkg in found.items()}
-    unique_versions = set(versions.values())
-    if len(unique_versions) > 1:
-        raise ValueError(
-            f"Package '{package_name}' has inconsistent versions across architectures: {versions}"
-        )
-
-    first_arch = next(iter(found))
-    LOGGER.info(f"Package '{package_name}' found: version={versions[first_arch]} (consistent across {list(found.keys())})")
-    return found[first_arch]
+    LOGGER.info(f"Package '{package_name}' versions: {versions}")
+    return versions
 
 
 def _cosign_download_sbom(image_uri: str) -> Optional[Dict]:
@@ -191,6 +182,21 @@ def _get_arch_digests(image_uri: str) -> List[tuple]:
         ]
     except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
         return []
+
+
+def _get_image_arch(image_uri: str) -> str:
+    """Get the architecture of a single (non-manifest-list) image."""
+    try:
+        result = subprocess.run(
+            ['skopeo', 'inspect', '--no-tags', f'docker://{image_uri}'],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            return info.get('Architecture', 'unknown')
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+    return 'unknown'
 
 
 def _strip_tag(image_uri: str) -> str:

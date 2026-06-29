@@ -124,7 +124,7 @@ class TestExtractSbomMetadata:
         proc.metadata_config_yaml_path = config_path
 
         patcher, mock_get_pkg = _patch_get_package_info(
-            mock_return={'name': 'python', 'versionInfo': '3.12.0'}
+            mock_return={'amd64': '3.12.0'}
         )
         with patcher:
             result = proc.extract_sbom_metadata()
@@ -144,7 +144,7 @@ class TestExtractSbomMetadata:
         proc.metadata_config_yaml_path = config_path
 
         patcher, mock_get_pkg = _patch_get_package_info(
-            mock_return={'name': 'vllm', 'versionInfo': '0.18.0+rhaiv.7'}
+            mock_return={'amd64': '0.18.0+rhaiv.7'}
         )
         with patcher:
             result = proc.extract_sbom_metadata()
@@ -165,9 +165,9 @@ class TestExtractSbomMetadata:
         proc.metadata_config_yaml_path = config_path
 
         patcher, mock_get_pkg = _patch_get_package_info(mock_side_effect=[
-            {'name': 'vllm', 'versionInfo': '0.18.0+rhaiv.7'},
-            {'name': 'vllm', 'versionInfo': '0.17.1+rhaiv.0'},
-            {'name': 'python', 'versionInfo': '3.12.0'},
+            {'amd64': '0.18.0+rhaiv.7'},
+            {'amd64': '0.17.1+rhaiv.0'},
+            {'amd64': '3.12.0'},
         ])
         with patcher:
             result = proc.extract_sbom_metadata()
@@ -206,8 +206,8 @@ class TestExtractSbomMetadata:
             with pytest.raises(RuntimeError, match="not found in SBOM"):
                 proc.extract_sbom_metadata()
 
-    def test_version_mismatch_exits(self, processor_env):
-        """Version differs across architectures — ValueError propagates."""
+    def test_no_amd64_exits(self, processor_env):
+        """No amd64 version available — sys.exit(1)."""
         proc, bundle_dir = processor_env
         config_path = str(bundle_dir / 'metadata-config.yaml')
         write_yaml(config_path, make_metadata_config([
@@ -216,11 +216,29 @@ class TestExtractSbomMetadata:
         proc.metadata_config_yaml_path = config_path
 
         patcher, _ = _patch_get_package_info(
-            mock_side_effect=ValueError("inconsistent versions across architectures")
+            mock_return={'arm64': '0.18.0'}
         )
         with patcher:
-            with pytest.raises(ValueError, match="inconsistent versions"):
+            with pytest.raises(SystemExit):
                 proc.extract_sbom_metadata()
+
+    def test_different_versions_warns_uses_amd64(self, processor_env):
+        """Different versions across arches — warns but uses amd64 value."""
+        proc, bundle_dir = processor_env
+        config_path = str(bundle_dir / 'metadata-config.yaml')
+        write_yaml(config_path, make_metadata_config([
+            make_sbom_entry(['RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE'])
+        ]))
+        proc.metadata_config_yaml_path = config_path
+
+        patcher, _ = _patch_get_package_info(
+            mock_return={'amd64': '0.18.0+rhaiv.7', 'arm64': '0.17.1+rhaiv.0'}
+        )
+        with patcher:
+            result = proc.extract_sbom_metadata()
+
+        assert len(result) == 1
+        assert result[0]['value'] == '0.18.0+rhaiv.7'
 
     def test_tag_stripped_from_additional_images(self, processor_env):
         """Additional images have tags stripped (e.g., ':3.4@sha256:' becomes '@sha256:')."""
@@ -232,7 +250,7 @@ class TestExtractSbomMetadata:
         proc.metadata_config_yaml_path = config_path
 
         patcher, mock_get_pkg = _patch_get_package_info(
-            mock_return={'name': 'vllm', 'versionInfo': '0.18.0'}
+            mock_return={'amd64': '0.18.0'}
         )
         with patcher:
             proc.extract_sbom_metadata()
@@ -254,7 +272,7 @@ class TestSbomMetadataConflictCheck:
         proc.metadata_config_yaml_path = config_path
 
         patcher, _ = _patch_get_package_info(
-            mock_return={'name': 'vllm', 'versionInfo': '0.18.0'}
+            mock_return={'amd64': '0.18.0'}
         )
         with patcher:
             sbom_entries = proc.extract_sbom_metadata()
@@ -278,7 +296,7 @@ class TestSbomMetadataConflictCheck:
         proc.metadata_config_yaml_path = config_path
 
         patcher, _ = _patch_get_package_info(
-            mock_return={'name': 'vllm', 'versionInfo': '0.18.0'}
+            mock_return={'amd64': '0.18.0'}
         )
         with patcher:
             sbom_entries = proc.extract_sbom_metadata()
