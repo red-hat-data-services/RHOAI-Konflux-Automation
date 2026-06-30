@@ -11,13 +11,14 @@ import json
 from logger.logger import getLogger
 import utils.util as util
 import constants.constants as CONSTANTS
+from utils.sbom import get_package_info
 
 LOGGER = getLogger('processor')
 
 
 class bundle_processor:
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None, metadata_config_yaml_path:str=None):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Bundle Processor")
         LOGGER.info("=============================================================================")
@@ -39,6 +40,7 @@ class bundle_processor:
         self.openshift_helm_push_pipeline_yaml_path = openshift_helm_push_pipeline_yaml_path
         self.xks_helm_chart_yaml_path = str(Path(xks_helm_values_yaml_path).parent / 'Chart.yaml') if xks_helm_values_yaml_path else None
         self.openshift_helm_chart_yaml_path = str(Path(openshift_helm_values_yaml_path).parent / 'Chart.yaml') if openshift_helm_values_yaml_path else None
+        self.metadata_config_yaml_path = metadata_config_yaml_path
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -66,6 +68,8 @@ class bundle_processor:
             LOGGER.info(f"xks_helm_chart_yaml_path: {self.xks_helm_chart_yaml_path}")
         if self.openshift_helm_chart_yaml_path:
             LOGGER.info(f"openshift_helm_chart_yaml_path: {self.openshift_helm_chart_yaml_path}")
+        if self.metadata_config_yaml_path:
+            LOGGER.info(f"metadata_config_yaml_path: {self.metadata_config_yaml_path}")
 
         LOGGER.info("")
         LOGGER.info("Loading yaml files...")
@@ -149,7 +153,19 @@ class bundle_processor:
 
         LOGGER.info("")
         LOGGER.info("=============================================================================")
-        LOGGER.info("Applying registry and repo replacements for Operator and Operand Images...")
+        LOGGER.info("Loading additional images...")
+        LOGGER.info("=============================================================================")
+        self.additional_image_entries = self._load_additional_images()
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Extracting SBOM metadata (before registry replacements)...")
+        LOGGER.info("=============================================================================")
+        self.sbom_metadata_entries = self.extract_sbom_metadata()
+
+        LOGGER.info("")
+        LOGGER.info("=============================================================================")
+        LOGGER.info("Applying registry and repo replacements...")
         LOGGER.info("=============================================================================")
         self.apply_replacements()
         LOGGER.debug(f"operator_image_entry: {json.dumps(self.operator_image_entry, indent=4, default=str)}")
@@ -302,11 +318,36 @@ class bundle_processor:
         LOGGER.info("  Bundle build args generated successfully!")
         return bundle_build_args
 
+    def _load_additional_images(self):
+        """
+        Load additional images from patch config, strip tags, and deduplicate.
+
+        Returns:
+            List of image entry dicts, or empty list if not configured.
+        """
+        if 'additional-related-images' not in self.patch_dict['patch']:
+            return []
+
+        additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
+        additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
+        LOGGER.info("  Loading additional images from patch...")
+
+        additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
+
+        return list({
+            image["name"]: {
+                "name": image["name"],
+                "value": re.sub(r':[^\s:@]+@', '@', image["value"])
+            }
+            for image in additional_images_dict['additionalImages']
+        }.values())
+
     def apply_replacements(self):
         """
-        Applies registry and repo replacements for operator and operand images.
-        
-        Replaces build registry and repo with production registry and repo mappings.
+        Applies registry and repo replacements for operator, operand, and additional images.
+
+        - Operator and operand images: replaces build registry/repo with production equivalents
+        - Additional images: validates registries, replaces stage with production
         """
         self.operand_image_entries = self.operands_map_dict['relatedImages']
 
@@ -321,6 +362,103 @@ class bundle_processor:
             registry_mapping={self.build_config_dict['config']['replacements'][0]['registry']: CONSTANTS.PRODUCTION_REGISTRY},
             repo_mappings=self.build_config_dict['config']['replacements'][0]['repo_mappings']
         )
+
+        LOGGER.debug("  Validating registries and applying replacements for additional images...")
+        allowed_registries = {CONSTANTS.PRODUCTION_REGISTRY, CONSTANTS.STAGE_REGISTRY}
+        disallowed_images = []
+        for image in self.additional_image_entries:
+            registry = image['value'].split('/')[0]
+            if registry not in allowed_registries:
+                disallowed_images.append(image)
+            else:
+                original_value = image['value']
+                image['value'] = image['value'].replace(CONSTANTS.STAGE_REGISTRY, CONSTANTS.PRODUCTION_REGISTRY)
+                if image['value'] != original_value:
+                    LOGGER.debug(f"    {original_value} -> {image['value']}")
+        if disallowed_images:
+            additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
+            LOGGER.error(f"{additional_images_file} contains entries from disallowed registries. Allowed registries are: {allowed_registries}")
+            LOGGER.error(f"{json.dumps(disallowed_images, indent=4, default=str)}")
+            sys.exit(1)
+
+    def extract_sbom_metadata(self):
+        """
+        Extract package metadata from image SBOMs as defined in metadata-config.yaml.
+
+        Must be called before apply_replacements() so image URIs point to the
+        build registry (quay.io/stage) where images actually exist during CI.
+
+        Expected metadata-config.yaml schema:
+
+            sbom-metadata:
+              - env_vars:                                    # list of env var names to look up
+                  - "RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE"
+                  - "RELATED_IMAGE_RHAII_VLLM_GAUDI_IMAGE"
+                package: "vllm"                              # package name to find in the SBOM
+                suffix: "_UPSTREAM_VERSION"                   # appended to each env var name
+
+        For each env var, the image URI is resolved from the operands map or
+        additional images, the SBOM is downloaded via cosign, and the package's
+        versionInfo is extracted. A new env var is created with the name
+        "{env_var}{suffix}" and the version as its value.
+
+        Prerequisites:
+            Registry auth must be configured before calling this method (e.g.,
+            `skopeo login registry.redhat.io`). The SBOM download uses cosign
+            and skopeo, which read credentials from ~/.docker/config.json or
+            the containers auth config.
+
+        Returns:
+            List of env var dicts ({'name': ..., 'value': ...}) to inject into the CSV,
+            or an empty list if metadata-config.yaml is not provided.
+        """
+        if not self.metadata_config_yaml_path:
+            LOGGER.info("No metadata-config.yaml provided, skipping SBOM metadata extraction")
+            return []
+
+        LOGGER.info(f"Loading metadata config: {self.metadata_config_yaml_path}")
+        metadata_config = util.load_yaml_file(self.metadata_config_yaml_path, parser='pyyaml')
+
+        sbom_entries = metadata_config.get('sbom-metadata', [])
+        if not sbom_entries:
+            LOGGER.info("No sbom-metadata entries in metadata-config.yaml, skipping")
+            return []
+
+        image_lookup = {
+            str(entry['name']): str(entry['value'])
+            for entry in self.operands_map_dict['relatedImages']
+        }
+        for entry in self.additional_image_entries:
+            image_lookup[str(entry['name'])] = str(entry['value'])
+
+        new_env_vars = []
+        for sbom_entry in sbom_entries:
+            package_name = sbom_entry['package']
+            suffix = sbom_entry['suffix']
+
+            for env_var in sbom_entry['env_vars']:
+                image_uri = image_lookup.get(env_var)
+                if not image_uri:
+                    LOGGER.warning(f"  '{env_var}' not found in operands map or additional images, skipping")
+                    continue
+
+                LOGGER.info(f"  Extracting '{package_name}' version from SBOM for {env_var}...")
+                arch_versions = get_package_info(image_uri, package_name)
+                if 'amd64' not in arch_versions:
+                    LOGGER.error(f"  No amd64 version found for '{package_name}' in {env_var}, available: {list(arch_versions.keys())}")
+                    sys.exit(1)
+                version = arch_versions['amd64']
+                if len(set(arch_versions.values())) > 1:
+                    LOGGER.warning(f"  Version differs across architectures: {arch_versions} — using amd64 value")
+                new_name = f"{env_var}{suffix}"
+                LOGGER.info(f"    {new_name} = {version}")
+                new_env_vars.append({
+                    'name': new_name,
+                    'value': DoubleQuotedScalarString(version)
+                })
+
+        LOGGER.info(f"Extracted {len(new_env_vars)} SBOM metadata env var(s)")
+        return new_env_vars
 
     def patch_csv_yaml(self):
         """
@@ -376,6 +514,16 @@ class bundle_processor:
         # Prepare env and related images list
         self.env_vars, self.related_images = self.prepare_env_and_related_images()
 
+        # Inject SBOM-derived metadata into env vars
+        if self.sbom_metadata_entries:
+            existing_names = {str(entry['name']) for entry in self.env_vars}
+            conflicts = [e['name'] for e in self.sbom_metadata_entries if e['name'] in existing_names]
+            if conflicts:
+                LOGGER.error(f"SBOM metadata env var names conflict with existing env vars: {conflicts}")
+                sys.exit(1)
+            self.env_vars.extend(self.sbom_metadata_entries)
+            LOGGER.info(f"  Injected {len(self.sbom_metadata_entries)} SBOM metadata env var(s) into deployment spec")
+
         LOGGER.info("")
         LOGGER.info("Updating deployment env vars...")
         self.csv_dict['spec']['install']['spec']['deployments'][0]['spec']['template']['spec']['containers'][0]['env'] = self.env_vars
@@ -404,44 +552,9 @@ class bundle_processor:
         LOGGER.info("Generating full list of deployment environment variables:")
         LOGGER.info("  Adding images from operands map...")
         
-        # Load and merge additional images if defined in patch config
-        if 'additional-related-images' in self.patch_dict['patch']:
-            additional_images_file = self.patch_dict['patch']['additional-related-images']['file']
-            additional_images_path = f'{Path(self.patch_yaml_path).parent.absolute()}/{additional_images_file}'
+        if self.additional_image_entries:
             LOGGER.info("  Adding images from additional images patch...")
-            
-            additional_images_dict = util.load_yaml_file(additional_images_path, parser='pyyaml')
-            
-            # Drop tags from image values and deduplicate by name.
-            # Later entries with the same name will overwrite earlier ones.
-            additional_images = list({
-                image["name"]: {
-                    "name": image["name"],
-                    "value": re.sub(r':[^\s:@]+@', '@', image["value"])
-                }
-                for image in additional_images_dict['additionalImages']
-            }.values())
-
-            LOGGER.debug("  Validating registries and applying replacements for additional images...")
-            allowed_registries = {CONSTANTS.PRODUCTION_REGISTRY, CONSTANTS.STAGE_REGISTRY}
-            disallowed_images = []
-            for image in additional_images:
-                registry = image['value'].split('/')[0]
-                if registry not in allowed_registries:
-                    disallowed_images.append(image)
-                else:
-                    original_value = image['value']
-                    image['value'] = image['value'].replace(CONSTANTS.STAGE_REGISTRY, CONSTANTS.PRODUCTION_REGISTRY)
-                    if image['value'] != original_value:
-                        LOGGER.debug(f"    {original_value} -> {image['value']}")
-            if disallowed_images:
-                LOGGER.error(f"{additional_images_file} contains entries from disallowed registries. Allowed registries are: {allowed_registries}")
-                LOGGER.error(f"{json.dumps(disallowed_images, indent=4, default=str)}")
-                sys.exit(1)
-
-            LOGGER.debug(f"  additional_images: {json.dumps(additional_images, indent=4, default=str)}")
-
-            new_env_vars = self.operand_image_entries + additional_images
+            new_env_vars = self.operand_image_entries + self.additional_image_entries
         else:
             new_env_vars = self.operand_image_entries
 
@@ -710,6 +823,8 @@ if __name__ == '__main__':
                         help='Path of the OpenShift helm chart values.yaml to be patched', dest='openshift_helm_values_yaml_path')
     parser.add_argument('-ohpp', '--openshift-helm-push-pipeline-yaml-path', required=False,
                         help='Path of the OpenShift helm tekton push pipeline', dest='openshift_helm_push_pipeline_yaml_path')
+    parser.add_argument('-mc', '--metadata-config-yaml-path', required=False,
+                        help='Path of the metadata-config.yaml for SBOM metadata extraction', dest='metadata_config_yaml_path')
     # For POC purposes: snapshot_processor arguments
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
@@ -718,7 +833,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path, metadata_config_yaml_path=args.metadata_config_yaml_path)
         processor.process()
 
     # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'

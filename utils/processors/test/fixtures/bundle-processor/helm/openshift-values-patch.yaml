@@ -1,0 +1,5 @@
+operator:
+  type: rhoai
+  rhoai:
+    olm:
+      channel: stable-3.4

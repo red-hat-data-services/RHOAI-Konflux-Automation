@@ -1,0 +1,12 @@
+metadata:
+  labels:
+    operatorframework.io/arch.amd64: supported
+    operatorframework.io/os.linux: supported
+  annotations:
+    features.operators.openshift.io/disconnected: "true"
+    description: Operator for deployment and management of Red Hat OpenShift AI
+spec:
+  maturity: stable
+  minKubeVersion: 1.25.0
+  provider:
+    name: 'Red Hat, Inc.'
