@@ -308,3 +308,121 @@ class TestSbomMetadataConflictCheck:
         existing_names = {str(entry['name']) for entry in existing_env}
         conflicts = [e['name'] for e in sbom_entries if e['name'] in existing_names]
         assert conflicts == ['RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION']
+
+
+class TestSbomMetadataInHelmChart:
+    """Tests for SBOM metadata injection into XKS Helm chart relatedImages."""
+
+    def _make_helm_processor(self, sbom_metadata_entries=None):
+        """Create a FakeProcessor with enough state to call patch_xks_helm_chart()."""
+        class FakeProcessor:
+            pass
+
+        proc = FakeProcessor()
+        proc.operator_image = 'registry.redhat.io/rhoai/odh-rhel9-operator@sha256:abc123'
+        proc.env_vars = [
+            {'name': 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE', 'value': 'registry.redhat.io/rhoai/odh-dashboard-rhel9@sha256:dash123'},
+            {'name': 'RELATED_IMAGE_OSE_CLI_IMAGE', 'value': 'registry.redhat.io/openshift4/ose-cli@sha256:cli123'},
+        ]
+        proc.sbom_metadata_entries = sbom_metadata_entries or []
+        proc.patch_dict = {'patch': {'version': '3.4.1'}}
+        proc.xks_helm_patch_dict = {
+            'rhaiOperator': {
+                'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder',
+                'relatedImages': [
+                    {'name': 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE', 'value': 'quay.io/rhoai/odh-dashboard-rhel9@sha256:placeholder'},
+                ],
+            },
+            'hooks': {'cliImage': 'quay.io/placeholder@sha256:placeholder'},
+            'azure': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+            'coreweave': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+            'aws': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+        }
+        proc.xks_helm_values_dict = {
+            'rhaiOperator': {
+                'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder',
+                'relatedImages': [
+                    {'name': 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE', 'value': 'quay.io/rhoai/odh-dashboard-rhel9@sha256:placeholder'},
+                ],
+            },
+            'hooks': {'cliImage': 'quay.io/placeholder@sha256:placeholder'},
+            'azure': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+            'coreweave': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+            'aws': {'cloudManager': {'image': 'quay.io/rhoai/odh-rhel9-operator@sha256:placeholder'}},
+        }
+        proc.xks_helm_chart_yaml_path = None
+        proc.xks_helm_chart_dict = None
+
+        # Bind the method
+        proc.patch_xks_helm_chart = bp_module.bundle_processor.patch_xks_helm_chart.__get__(proc)
+        return proc
+
+    def test_no_sbom_entries_unchanged(self):
+        """When no SBOM metadata entries exist, relatedImages stays unchanged."""
+        proc = self._make_helm_processor(sbom_metadata_entries=[])
+        proc.patch_xks_helm_chart()
+
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        names = [str(ri['name']) for ri in related_images]
+        assert names == ['RELATED_IMAGE_ODH_DASHBOARD_IMAGE']
+
+    def test_sbom_entries_added_to_related_images(self):
+        """SBOM metadata entries are appended to XKS Helm relatedImages."""
+        sbom_entries = [
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
+        ]
+        proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
+        proc.patch_xks_helm_chart()
+
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        names = [str(ri['name']) for ri in related_images]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in names
+
+        version_entry = next(ri for ri in related_images if str(ri['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION')
+        assert str(version_entry['value']) == '0.18.0+rhaiv.7'
+
+    def test_multiple_sbom_entries_added(self):
+        """Multiple SBOM metadata entries are all appended."""
+        sbom_entries = [
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_GAUDI_IMAGE_UPSTREAM_VERSION', 'value': '0.17.1+rhaiv.0'},
+        ]
+        proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
+        proc.patch_xks_helm_chart()
+
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        names = [str(ri['name']) for ri in related_images]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in names
+        assert 'RELATED_IMAGE_RHAII_VLLM_GAUDI_IMAGE_UPSTREAM_VERSION' in names
+        # Original image entry should still be present
+        assert 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE' in names
+
+    def test_sbom_entries_also_in_patch_dict(self):
+        """SBOM metadata entries are added to both patch dict and values dict."""
+        sbom_entries = [
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
+        ]
+        proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
+        proc.patch_xks_helm_chart()
+
+        patch_related_images = proc.xks_helm_patch_dict['rhaiOperator']['relatedImages']
+        patch_names = [str(ri['name']) for ri in patch_related_images]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in patch_names
+
+    def test_existing_sbom_entry_updated(self):
+        """If an SBOM entry already exists in relatedImages, its value is updated."""
+        sbom_entries = [
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.19.0'},
+        ]
+        proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
+        # Pre-add the entry with an old value
+        proc.xks_helm_patch_dict['rhaiOperator']['relatedImages'].append(
+            {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0'}
+        )
+        proc.patch_xks_helm_chart()
+
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        version_entries = [ri for ri in related_images if str(ri['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION']
+        # Should be exactly one entry (updated, not duplicated)
+        assert len(version_entries) == 1
+        assert str(version_entries[0]['value']) == '0.19.0'
