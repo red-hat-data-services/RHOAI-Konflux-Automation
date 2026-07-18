@@ -397,8 +397,8 @@ class TestSbomMetadataInHelmChart:
         # Original image entry should still be present
         assert 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE' in names
 
-    def test_sbom_entries_also_in_patch_dict(self):
-        """SBOM metadata entries are added to both patch dict and values dict."""
+    def test_sbom_entries_not_in_patch_dict(self):
+        """SBOM metadata entries are added to values dict only, not patch dict."""
         sbom_entries = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
         ]
@@ -407,7 +407,11 @@ class TestSbomMetadataInHelmChart:
 
         patch_related_images = proc.xks_helm_patch_dict['rhaiOperator']['relatedImages']
         patch_names = [str(ri['name']) for ri in patch_related_images]
-        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in patch_names
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' not in patch_names
+
+        values_related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        values_names = [str(ri['name']) for ri in values_related_images]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in values_names
 
     def test_existing_sbom_entry_updated(self):
         """If an SBOM entry already exists in relatedImages, its value is updated."""

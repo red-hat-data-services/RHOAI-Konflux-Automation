@@ -619,10 +619,10 @@ class bundle_processor:
         Steps:
             1. Update xks-values-patch.yaml: replace operator image references and relatedImages
                values with fully resolved digests, then write the updated patch file.
-               Also appends any SBOM metadata entries (e.g., _UPSTREAM_VERSION env vars)
-               from metadata-config.yaml to the relatedImages list.
             2. Apply the updated patch to values.yaml: set operator image, relatedImages
-               (preserved as list format), and cloud-specific images.
+               (preserved as list format), and cloud-specific images. Also appends any
+               SBOM metadata entries (e.g., _UPSTREAM_VERSION env vars) from
+               metadata-config.yaml to the values.yaml relatedImages only.
         """
         cloud_providers = ['azure', 'coreweave', 'aws']
 
@@ -656,24 +656,6 @@ class bundle_processor:
             else:
                 LOGGER.warning(f"  No matching env var found for: {name}")
 
-        # Add SBOM metadata entries (e.g., _UPSTREAM_VERSION) to Helm chart relatedImages
-        if self.sbom_metadata_entries:
-            LOGGER.info("")
-            LOGGER.info("Adding SBOM metadata entries to relatedImages...")
-            existing_names = {str(ri['name']) for ri in helm_related_images}
-            for entry in self.sbom_metadata_entries:
-                entry_name = str(entry['name'])
-                entry_value = DoubleQuotedScalarString(str(entry['value']))
-                if entry_name not in existing_names:
-                    helm_related_images.append({'name': entry_name, 'value': entry_value})
-                    LOGGER.info(f"  Added {entry_name}: {entry['value']}")
-                else:
-                    for ri in helm_related_images:
-                        if str(ri['name']) == entry_name:
-                            ri['value'] = entry_value
-                            LOGGER.info(f"  Updated {entry_name}: {entry['value']}")
-                            break
-
         LOGGER.info("")
         LOGGER.info("Updating hooks.cliImage in values-patch...")
         ose_cli_image_key = 'RELATED_IMAGE_OSE_CLI_IMAGE'
@@ -689,9 +671,28 @@ class bundle_processor:
         LOGGER.info("")
         LOGGER.info("Updating rhaiOperator fields...")
         self.xks_helm_values_dict['rhaiOperator']['image'] = DoubleQuotedScalarString(self.operator_image)
-        self.xks_helm_values_dict['rhaiOperator']['relatedImages'] = helm_related_images
+        values_related_images = list(helm_related_images)
+
+        if self.sbom_metadata_entries:
+            LOGGER.info("")
+            LOGGER.info("Adding SBOM metadata entries to values.yaml relatedImages...")
+            existing_names = {str(ri['name']) for ri in values_related_images}
+            for entry in self.sbom_metadata_entries:
+                entry_name = str(entry['name'])
+                entry_value = DoubleQuotedScalarString(str(entry['value']))
+                if entry_name not in existing_names:
+                    values_related_images.append({'name': entry_name, 'value': entry_value})
+                    LOGGER.info(f"  Added {entry_name}: {entry['value']}")
+                else:
+                    for ri in values_related_images:
+                        if str(ri['name']) == entry_name:
+                            ri['value'] = entry_value
+                            LOGGER.info(f"  Updated {entry_name}: {entry['value']}")
+                            break
+
+        self.xks_helm_values_dict['rhaiOperator']['relatedImages'] = values_related_images
         LOGGER.info("  rhaiOperator.image updated")
-        LOGGER.info(f"  rhaiOperator.relatedImages updated with {len(helm_related_images)} entries")
+        LOGGER.info(f"  rhaiOperator.relatedImages updated with {len(values_related_images)} entries")
 
         if 'hooks' in self.xks_helm_patch_dict and 'cliImage' in self.xks_helm_patch_dict['hooks']:
             if 'hooks' in self.xks_helm_values_dict:
