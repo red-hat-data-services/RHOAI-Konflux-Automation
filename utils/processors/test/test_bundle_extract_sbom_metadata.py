@@ -311,7 +311,7 @@ class TestSbomMetadataConflictCheck:
 
 
 class TestSbomMetadataInHelmChart:
-    """Tests for SBOM metadata injection into XKS Helm chart relatedImages."""
+    """Tests for SBOM metadata injection into XKS Helm chart extraEnvVars."""
 
     def _make_helm_processor(self, sbom_metadata_entries=None):
         """Create a FakeProcessor with enough state to call patch_xks_helm_chart()."""
@@ -358,31 +358,36 @@ class TestSbomMetadataInHelmChart:
         return proc
 
     def test_no_sbom_entries_unchanged(self):
-        """When no SBOM metadata entries exist, relatedImages stays unchanged."""
+        """When no SBOM metadata entries exist, relatedImages stays unchanged and no extraEnvVars key is added."""
         proc = self._make_helm_processor(sbom_metadata_entries=[])
         proc.patch_xks_helm_chart()
 
         related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
         names = [str(ri['name']) for ri in related_images]
         assert names == ['RELATED_IMAGE_ODH_DASHBOARD_IMAGE']
+        assert 'extraEnvVars' not in proc.xks_helm_values_dict['rhaiOperator']
 
-    def test_sbom_entries_added_to_related_images(self):
-        """SBOM metadata entries are appended to XKS Helm relatedImages."""
+    def test_sbom_entries_added_to_extra_env_vars(self):
+        """SBOM metadata entries are added to XKS Helm extraEnvVars, not relatedImages."""
         sbom_entries = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
         ]
         proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
         proc.patch_xks_helm_chart()
 
-        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
-        names = [str(ri['name']) for ri in related_images]
+        extra_env_vars = proc.xks_helm_values_dict['rhaiOperator']['extraEnvVars']
+        names = [str(ev['name']) for ev in extra_env_vars]
         assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in names
 
-        version_entry = next(ri for ri in related_images if str(ri['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION')
+        version_entry = next(ev for ev in extra_env_vars if str(ev['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION')
         assert str(version_entry['value']) == '0.18.0+rhaiv.7'
 
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        ri_names = [str(ri['name']) for ri in related_images]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' not in ri_names
+
     def test_multiple_sbom_entries_added(self):
-        """Multiple SBOM metadata entries are all appended."""
+        """Multiple SBOM metadata entries are all added to extraEnvVars."""
         sbom_entries = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
             {'name': 'RELATED_IMAGE_RHAII_VLLM_GAUDI_IMAGE_UPSTREAM_VERSION', 'value': '0.17.1+rhaiv.0'},
@@ -390,15 +395,18 @@ class TestSbomMetadataInHelmChart:
         proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
         proc.patch_xks_helm_chart()
 
-        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
-        names = [str(ri['name']) for ri in related_images]
+        extra_env_vars = proc.xks_helm_values_dict['rhaiOperator']['extraEnvVars']
+        names = [str(ev['name']) for ev in extra_env_vars]
         assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in names
         assert 'RELATED_IMAGE_RHAII_VLLM_GAUDI_IMAGE_UPSTREAM_VERSION' in names
-        # Original image entry should still be present
-        assert 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE' in names
 
-    def test_sbom_entries_not_in_patch_dict(self):
-        """SBOM metadata entries are added to values dict only, not patch dict."""
+        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
+        ri_names = [str(ri['name']) for ri in related_images]
+        assert 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE' in ri_names
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' not in ri_names
+
+    def test_sbom_entries_not_in_patch_or_related_images(self):
+        """SBOM metadata entries go to extraEnvVars, not patch dict or relatedImages."""
         sbom_entries = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0+rhaiv.7'},
         ]
@@ -411,22 +419,25 @@ class TestSbomMetadataInHelmChart:
 
         values_related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
         values_names = [str(ri['name']) for ri in values_related_images]
-        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in values_names
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' not in values_names
 
-    def test_existing_sbom_entry_updated(self):
-        """If an SBOM entry already exists in relatedImages, its value is updated."""
+        extra_env_vars = proc.xks_helm_values_dict['rhaiOperator']['extraEnvVars']
+        extra_names = [str(ev['name']) for ev in extra_env_vars]
+        assert 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION' in extra_names
+
+    def test_existing_sbom_entry_updated_in_extra_env_vars(self):
+        """If an SBOM entry already exists in extraEnvVars, its value is updated."""
         sbom_entries = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.19.0'},
         ]
         proc = self._make_helm_processor(sbom_metadata_entries=sbom_entries)
-        # Pre-add the entry with an old value
-        proc.xks_helm_patch_dict['rhaiOperator']['relatedImages'].append(
+        # Pre-add the entry with an old value in extraEnvVars
+        proc.xks_helm_values_dict['rhaiOperator']['extraEnvVars'] = [
             {'name': 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION', 'value': '0.18.0'}
-        )
+        ]
         proc.patch_xks_helm_chart()
 
-        related_images = proc.xks_helm_values_dict['rhaiOperator']['relatedImages']
-        version_entries = [ri for ri in related_images if str(ri['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION']
-        # Should be exactly one entry (updated, not duplicated)
+        extra_env_vars = proc.xks_helm_values_dict['rhaiOperator']['extraEnvVars']
+        version_entries = [ev for ev in extra_env_vars if str(ev['name']) == 'RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE_UPSTREAM_VERSION']
         assert len(version_entries) == 1
         assert str(version_entries[0]['value']) == '0.19.0'
