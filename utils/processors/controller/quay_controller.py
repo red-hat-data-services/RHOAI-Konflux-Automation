@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import json
 import sys
@@ -11,10 +12,14 @@ class quay_controller:
     def __init__(self, org:str):
         self.org = org
 
+    def _token_env_var(self):
+        normalized = re.sub(r'[^A-Za-z0-9]', '_', self.org).upper()
+        return normalized + '_QUAY_API_TOKEN'
+
     def get_tag_details(self, repo, tag):
         result_tag = {}
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=true'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         tags = response.json()['tags']
@@ -24,7 +29,7 @@ class quay_controller:
 
     def get_all_tags(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=false'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         if 'tags' in response.json():
@@ -56,7 +61,7 @@ class quay_controller:
 
     def get_manifest_details(self, repo, manifest_digest):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{manifest_digest}'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
 
@@ -69,7 +74,7 @@ class quay_controller:
     def get_git_labels(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{tag}/labels'
         # ?filter=git, throwing 403 forbidden, due to this need to check, seems quay issue, disabling the fitler for now
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         if 'labels' in response.json():
