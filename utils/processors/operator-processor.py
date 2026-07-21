@@ -11,7 +11,7 @@ LOGGER = getLogger('processor')
 
 class operator_processor:
 
-    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str):
+    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, use_existing_digests:bool=False):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Operator Processor")
         LOGGER.info("=============================================================================")
@@ -22,6 +22,7 @@ class operator_processor:
         self.rhoai_version = rhoai_version
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
+        self.use_existing_digests = use_existing_digests
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"push_pipeline_operation: {self.push_pipeline_operation}")
         LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
@@ -53,13 +54,23 @@ class operator_processor:
         LOGGER.info("=============================================================================")
         self.sync_yamls_from_bundle_patch()
 
-        LOGGER.info("")
-        LOGGER.info("=============================================================================")
-        LOGGER.info("Querying Quay.io for latest image digest and git metadata...")
-        LOGGER.info("=============================================================================")
-        self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(
-            self.operands_map_dict['relatedImages'], self.rhoai_version
-        )
+        if self.use_existing_digests:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("--use-existing-digests: Skipping Quay tag lookup, fetching git metadata only...")
+            LOGGER.info("=============================================================================")
+            self.git_labels_meta = util.fetch_git_metadata_for_existing_digests(
+                self.operands_map_dict['relatedImages']
+            )
+            self.latest_images = None
+        else:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info("Querying Quay.io for latest image digest and git metadata...")
+            LOGGER.info("=============================================================================")
+            self.latest_images, self.git_labels_meta = util.fetch_latest_images_and_git_metadata(
+                self.operands_map_dict['relatedImages'], self.rhoai_version
+            )
 
         if self.latest_images:
             LOGGER.info("")
@@ -186,10 +197,30 @@ class operator_processor:
             exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']
         )
 
-        # Sync operands-map: The relatedImages list is completely replaced with the filtered_images
-        # Uses deepcopy to avoid shared references
-        self.operands_map_dict['relatedImages'] = copy.deepcopy(filtered_images)
-        LOGGER.info("Operands Map synced successfully")
+        if self.use_existing_digests:
+            # Only keep components already present in operands-map or nudging-yaml.
+            # New components from bundle-patch are dropped — they carry public
+            # quay.io/rhoai/ refs that must not leak into an embargo build.
+            # Nudging-yaml values take priority (most recent Konflux nudge).
+            existing_values = {}
+            for entry in self.operands_map_dict.get('relatedImages', []):
+                existing_values[entry['name']] = str(entry['value'])
+            for entry in self.nudging_yaml_dict.get('relatedImages', []):
+                existing_values[entry['name']] = str(entry['value'])
+
+            synced_images = []
+            for entry in filtered_images:
+                if entry['name'] in existing_values:
+                    preserved = copy.deepcopy(entry)
+                    preserved['value'] = existing_values[entry['name']]
+                    synced_images.append(preserved)
+                else:
+                    LOGGER.warning(f"  Skipping new component '{entry['name']}' — not present in operands-map or nudging-yaml")
+            self.operands_map_dict['relatedImages'] = synced_images
+            LOGGER.info("Operands Map synced with existing digests preserved")
+        else:
+            self.operands_map_dict['relatedImages'] = copy.deepcopy(filtered_images)
+            LOGGER.info("Operands Map synced successfully")
         LOGGER.debug(f"Synced Operands Map: {json.dumps(self.operands_map_dict, indent=4, default=str)}")
 
         # Sync nudging YAML: The relatedImages list is merged with deduplicated, sorted and filtered bundle-patch entries(filtered_images).
@@ -235,10 +266,13 @@ if __name__ == '__main__':
                         help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
+    parser.add_argument('--use-existing-digests', action='store_true', default=False,
+                        help='Preserve existing image refs and digests instead of querying Quay for latest tags. Used for embargo nudging.',
+                        dest='use_existing_digests')
     args = parser.parse_args()
 
     if args.operation.lower() == 'process-operator-yamls':
-        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path)
+        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, use_existing_digests=args.use_existing_digests)
         processor.process()
 
     # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
