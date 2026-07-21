@@ -299,6 +299,43 @@ def fetch_latest_images_and_git_metadata(
     return latest_images, git_labels_meta
 
 
+def fetch_git_metadata_for_existing_digests(image_entries: List[Dict]) -> Dict:
+    """
+    Fetch git labels from Quay using the existing digests already present in
+    the operands map.  No tag lookup is performed — the manifest digest in
+    each image reference is used directly.
+
+    This is the --use-existing-digests path used during embargo nudging so
+    that private image references and their digests are never overwritten.
+    """
+    git_labels_meta = {'map': {}}
+
+    for image_entry in filter_image_entries(image_entries, exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']):
+        image_value = str(image_entry['value'])
+        parsed = parse_image_value(image_value)
+        LOGGER.info(f'  Processing (existing digest): {parsed["org"]}/{parsed["repo"]}')
+
+        qc = quay_controller(parsed['org'])
+        manifest_digest = parsed['digest']
+
+        manifest_details = qc.get_manifest_details(parsed['repo'], manifest_digest)
+        if manifest_details.get('is_manifest_list'):
+            arch_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(parsed['repo'], manifest_digest)
+            if arch_digests:
+                manifest_digest = arch_digests[0]
+
+        labels = qc.get_git_labels(parsed['repo'], manifest_digest)
+        labels = {l['key']: l['value'] for l in labels if l['value']}
+
+        git_labels_meta['map'][parsed['component_name']] = {
+            CONSTANTS.GIT_URL_LABEL_KEY: labels.get(CONSTANTS.GIT_URL_LABEL_KEY, ''),
+            CONSTANTS.GIT_COMMIT_LABEL_KEY: labels.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, ''),
+        }
+
+    LOGGER.info(f'git_labels_meta: {json.dumps(git_labels_meta, indent=4)}')
+    return git_labels_meta
+
+
 def process_push_pipeline(
     push_pipeline_dict: Dict,
     operation: str
