@@ -18,7 +18,7 @@ LOGGER = getLogger('processor')
 
 class bundle_processor:
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None, metadata_config_yaml_path:str=None):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None, metadata_config_yaml_path:str=None, use_existing_digests:bool=False):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Bundle Processor")
         LOGGER.info("=============================================================================")
@@ -41,6 +41,7 @@ class bundle_processor:
         self.xks_helm_chart_yaml_path = str(Path(xks_helm_values_yaml_path).parent / 'Chart.yaml') if xks_helm_values_yaml_path else None
         self.openshift_helm_chart_yaml_path = str(Path(openshift_helm_values_yaml_path).parent / 'Chart.yaml') if openshift_helm_values_yaml_path else None
         self.metadata_config_yaml_path = metadata_config_yaml_path
+        self.use_existing_digests = use_existing_digests
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -252,28 +253,37 @@ class bundle_processor:
             LOGGER.error("No ODH_OPERATOR entry found in relatedImages!")
             sys.exit(1)
 
-        LOGGER.info("")
-        LOGGER.info("Querying Quay.io for latest ODH Operator image digest and git metadata...")
-        # Compute version tag based on build type
-        version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
-        if self.build_type.lower() == 'nightly':
-            LOGGER.info(f"  Build type is nightly, using image tag: {version_tag}")
+        if self.use_existing_digests:
+            LOGGER.info("")
+            LOGGER.info("--use-existing-digests: Skipping Quay tag lookup, fetching git metadata by digest...")
+            operator_git_metadata = util.fetch_git_metadata_by_digest(odh_operator_entry)
+            return odh_operator_entry, operator_git_metadata
         else:
-            LOGGER.info(f"  Build type is ci, using image tag: {version_tag}")
+            LOGGER.info("")
+            LOGGER.info("Querying Quay.io for latest ODH Operator image digest and git metadata...")
+            # Compute version tag based on build type
+            version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
+            if self.build_type.lower() == 'nightly':
+                LOGGER.info(f"  Build type is nightly, using image tag: {version_tag}")
+            else:
+                LOGGER.info(f"  Build type is ci, using image tag: {version_tag}")
 
-        # Fetch latest image and git metadata for ODH Operator (with GitHub override for upstream repos)
-        operator_image_entry, operator_git_metadata = util.fetch_latest_images_and_git_metadata(
-            image_entries=odh_operator_entry,
-            image_tag=version_tag,
-            use_github_override=True
-        )
+            # Fetch latest image and git metadata for ODH Operator (with GitHub override for upstream repos)
+            operator_image_entry, operator_git_metadata = util.fetch_latest_images_and_git_metadata(
+                image_entries=odh_operator_entry,
+                image_tag=version_tag,
+                use_github_override=True
+            )
 
-        return operator_image_entry, operator_git_metadata
+            return operator_image_entry, operator_git_metadata
 
     def fetch_operands_map_and_manifest_config(self):
         """
         Fetches operands-map.yaml and manifests-config.yaml from the operator repo.
-        
+
+        Uses raw.githubusercontent.com for GitHub repos; clones the repo for
+        non-GitHub hosts (e.g., private GitLab).
+
         Returns:
             tuple: (operands_map_dict, manifest_config_dict)
         """
@@ -282,20 +292,30 @@ class bundle_processor:
         LOGGER.info(f"Operands map path: {CONSTANTS.OPERANDS_MAP_PATH}")
         LOGGER.info(f"Manifests config path: {CONSTANTS.MANIFESTS_CONFIG_PATH}")
 
-        # Fetch and load operands-map.yaml
-        operands_map_content = util.fetch_file_data_from_github(
-            git_url=self.operator_git_url,
-            git_commit=self.operator_git_commit,
-            file_path=CONSTANTS.OPERANDS_MAP_PATH
-        )
-        operands_map_dict = yaml.safe_load(operands_map_content)
+        file_paths = [CONSTANTS.OPERANDS_MAP_PATH, CONSTANTS.MANIFESTS_CONFIG_PATH]
 
-        # Fetch and load manifests-config.yaml
-        manifest_config_content = util.fetch_file_data_from_github(
-            git_url=self.operator_git_url,
-            git_commit=self.operator_git_commit,
-            file_path=CONSTANTS.MANIFESTS_CONFIG_PATH
-        )
+        if 'github.com' in self.operator_git_url:
+            operands_map_content = util.fetch_file_data_from_github(
+                git_url=self.operator_git_url,
+                git_commit=self.operator_git_commit,
+                file_path=CONSTANTS.OPERANDS_MAP_PATH
+            )
+            manifest_config_content = util.fetch_file_data_from_github(
+                git_url=self.operator_git_url,
+                git_commit=self.operator_git_commit,
+                file_path=CONSTANTS.MANIFESTS_CONFIG_PATH
+            )
+        else:
+            LOGGER.info("Non-GitHub repo detected, cloning to fetch files...")
+            fetched = util.fetch_files_from_git_repo(
+                git_url=self.operator_git_url,
+                git_commit=self.operator_git_commit,
+                file_paths=file_paths
+            )
+            operands_map_content = fetched[CONSTANTS.OPERANDS_MAP_PATH]
+            manifest_config_content = fetched[CONSTANTS.MANIFESTS_CONFIG_PATH]
+
+        operands_map_dict = yaml.safe_load(operands_map_content)
         manifest_config_dict = yaml.safe_load(manifest_config_content)
 
         return operands_map_dict, manifest_config_dict
@@ -851,6 +871,9 @@ if __name__ == '__main__':
                         help='Path of the OpenShift helm tekton push pipeline', dest='openshift_helm_push_pipeline_yaml_path')
     parser.add_argument('-mc', '--metadata-config-yaml-path', required=False,
                         help='Path of the metadata-config.yaml for SBOM metadata extraction', dest='metadata_config_yaml_path')
+    parser.add_argument('--use-existing-digests', action='store_true', default=False,
+                        help='Preserve existing operator image digest instead of querying Quay for latest tag. Used for embargo builds.',
+                        dest='use_existing_digests')
     # For POC purposes: snapshot_processor arguments
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
@@ -859,7 +882,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path, metadata_config_yaml_path=args.metadata_config_yaml_path)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path, metadata_config_yaml_path=args.metadata_config_yaml_path, use_existing_digests=args.use_existing_digests)
         processor.process()
 
     # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'

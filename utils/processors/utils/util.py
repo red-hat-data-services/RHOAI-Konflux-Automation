@@ -2,8 +2,11 @@
 Shared utility functions for RHOAI processors.
 """
 
+import os
+import subprocess
 import sys
 import json
+import tempfile
 from typing import List, Dict, Tuple, Optional
 import yaml
 import ruamel.yaml as ruyaml
@@ -334,6 +337,82 @@ def fetch_git_metadata_for_existing_digests(image_entries: List[Dict]) -> Dict:
 
     LOGGER.info(f'git_labels_meta: {json.dumps(git_labels_meta, indent=4)}')
     return git_labels_meta
+
+
+def fetch_git_metadata_by_digest(image_entries: List[Dict]) -> Dict:
+    """
+    Fetch git labels from Quay using the existing digest in each image entry.
+    Unlike fetch_git_metadata_for_existing_digests(), this does NOT apply any
+    include/exclude filters — it processes all entries as given.
+    """
+    git_labels_meta = {'map': {}}
+
+    for image_entry in image_entries:
+        image_value = str(image_entry['value'])
+        parsed = parse_image_value(image_value)
+        LOGGER.info(f'  Processing (existing digest): {parsed["org"]}/{parsed["repo"]}')
+
+        qc = quay_controller(parsed['org'])
+        manifest_digest = parsed['digest']
+
+        manifest_details = qc.get_manifest_details(parsed['repo'], manifest_digest)
+        if manifest_details.get('is_manifest_list'):
+            arch_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(parsed['repo'], manifest_digest)
+            if arch_digests:
+                manifest_digest = arch_digests[0]
+
+        labels = qc.get_git_labels(parsed['repo'], manifest_digest)
+        labels = {l['key']: l['value'] for l in labels if l['value']}
+
+        git_labels_meta['map'][parsed['component_name']] = {
+            CONSTANTS.GIT_URL_LABEL_KEY: labels.get(CONSTANTS.GIT_URL_LABEL_KEY, ''),
+            CONSTANTS.GIT_COMMIT_LABEL_KEY: labels.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, ''),
+        }
+
+    LOGGER.info(f'git_labels_meta: {json.dumps(git_labels_meta, indent=4)}')
+    return git_labels_meta
+
+
+def fetch_files_from_git_repo(
+    git_url: str,
+    git_commit: str,
+    file_paths: List[str]
+) -> Dict[str, str]:
+    """
+    Fetch files from a git repo by cloning at a specific commit.
+    Works with any git host (GitHub, GitLab, etc.).
+
+    Returns:
+        Dict mapping file_path -> file content string
+    """
+    with tempfile.TemporaryDirectory() as clone_dir:
+        LOGGER.info(f"  Cloning {git_url} at {git_commit}...")
+        subprocess.run(
+            ["git", "clone", "--depth=1", "--filter=blob:none", "--no-checkout",
+             git_url, clone_dir],
+            check=True, capture_output=True, text=True
+        )
+        subprocess.run(
+            ["git", "-C", clone_dir, "sparse-checkout", "set", "--no-cone"] + file_paths,
+            check=True, capture_output=True, text=True
+        )
+        subprocess.run(
+            ["git", "-C", clone_dir, "fetch", "origin", git_commit],
+            check=True, capture_output=True, text=True
+        )
+        subprocess.run(
+            ["git", "-C", clone_dir, "checkout", git_commit],
+            check=True, capture_output=True, text=True
+        )
+
+        results = {}
+        for fp in file_paths:
+            full_path = os.path.join(clone_dir, fp)
+            with open(full_path) as f:
+                results[fp] = f.read()
+            LOGGER.info(f"  Fetched {fp} ({len(results[fp])} bytes)")
+
+        return results
 
 
 def process_push_pipeline(
