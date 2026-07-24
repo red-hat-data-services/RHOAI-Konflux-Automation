@@ -59,9 +59,11 @@ class operator_processor:
             LOGGER.info("=============================================================================")
             LOGGER.info("--use-existing-digests: Skipping Quay tag lookup, fetching git metadata only...")
             LOGGER.info("=============================================================================")
-            self.git_labels_meta = util.fetch_git_metadata_for_existing_digests(
-                self.operands_map_dict['relatedImages']
+            filtered = util.filter_image_entries(
+                self.operands_map_dict['relatedImages'],
+                exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR']
             )
+            self.git_labels_meta = util.fetch_git_metadata_for_existing_digests(filtered)
             self.latest_images = None
         else:
             LOGGER.info("")

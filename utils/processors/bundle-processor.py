@@ -2,6 +2,7 @@ import sys
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from jsonupdate_ng import jsonupdate_ng
 import argparse
 import yaml
@@ -256,7 +257,7 @@ class bundle_processor:
         if self.use_existing_digests:
             LOGGER.info("")
             LOGGER.info("--use-existing-digests: Skipping Quay tag lookup, fetching git metadata by digest...")
-            operator_git_metadata = util.fetch_git_metadata_by_digest(odh_operator_entry)
+            operator_git_metadata = util.fetch_git_metadata_for_existing_digests(odh_operator_entry)
             return odh_operator_entry, operator_git_metadata
         else:
             LOGGER.info("")
@@ -294,7 +295,7 @@ class bundle_processor:
 
         file_paths = [CONSTANTS.OPERANDS_MAP_PATH, CONSTANTS.MANIFESTS_CONFIG_PATH]
 
-        if 'github.com' in self.operator_git_url:
+        if urlparse(self.operator_git_url).hostname == 'github.com':
             operands_map_content = util.fetch_file_data_from_github(
                 git_url=self.operator_git_url,
                 git_commit=self.operator_git_commit,
