@@ -291,7 +291,7 @@ class snapshot_processor:
                     print(f'  {prod_repo}: got git labels from {org}/{repo_name}')
                     labels_found = True
                     break
-                except Exception as e:
+                except (Exception, SystemExit) as e:
                     print(f'  {prod_repo}: {org}/{repo_name} failed ({e}), trying next source')
 
             if not labels_found:
