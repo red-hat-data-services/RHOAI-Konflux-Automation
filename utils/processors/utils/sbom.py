@@ -165,6 +165,8 @@ def _get_arch_digests(image_uri: str) -> List[tuple]:
             capture_output=True, text=True, timeout=60
         )
         if result.returncode != 0:
+            LOGGER.warning(f"skopeo inspect --raw failed (exit {result.returncode}) for {image_uri}: "
+                           f"{result.stderr.strip()}")
             return []
 
         manifest = json.loads(result.stdout)
@@ -180,7 +182,14 @@ def _get_arch_digests(image_uri: str) -> List[tuple]:
             for m in manifest.get('manifests', [])
             if 'platform' in m
         ]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
+    except subprocess.TimeoutExpired:
+        LOGGER.warning(f"skopeo inspect --raw timed out for: {image_uri}")
+        return []
+    except json.JSONDecodeError as e:
+        LOGGER.warning(f"Failed to parse manifest JSON from skopeo for {image_uri}: {e}")
+        return []
+    except KeyError as e:
+        LOGGER.warning(f"Unexpected manifest structure from skopeo for {image_uri}: missing key {e}")
         return []
 
 
