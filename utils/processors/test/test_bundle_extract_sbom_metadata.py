@@ -206,8 +206,27 @@ class TestExtractSbomMetadata:
             with pytest.raises(RuntimeError, match="not found in SBOM"):
                 proc.extract_sbom_metadata()
 
-    def test_no_amd64_exits(self, processor_env):
-        """No amd64 version available — sys.exit(1)."""
+    def test_no_amd64_falls_back_to_first_arch(self, processor_env):
+        """No amd64 version available — falls back to first available architecture."""
+        proc, bundle_dir = processor_env
+        config_path = str(bundle_dir / 'metadata-config.yaml')
+        write_yaml(config_path, make_metadata_config([
+            make_sbom_entry(['RELATED_IMAGE_ODH_DASHBOARD_IMAGE'])
+        ]))
+        proc.metadata_config_yaml_path = config_path
+
+        patcher, _ = _patch_get_package_info(
+            mock_return={'s390x': '0.18.0', 'ppc64le': '0.18.0'}
+        )
+        with patcher:
+            result = proc.extract_sbom_metadata()
+
+        assert len(result) == 1
+        assert result[0]['name'] == 'RELATED_IMAGE_ODH_DASHBOARD_IMAGE_UPSTREAM_VERSION'
+        assert result[0]['value'] == '0.18.0'
+
+    def test_no_amd64_single_arch(self, processor_env):
+        """Single non-amd64 architecture — uses that architecture's version."""
         proc, bundle_dir = processor_env
         config_path = str(bundle_dir / 'metadata-config.yaml')
         write_yaml(config_path, make_metadata_config([
@@ -219,8 +238,10 @@ class TestExtractSbomMetadata:
             mock_return={'arm64': '0.18.0'}
         )
         with patcher:
-            with pytest.raises(SystemExit):
-                proc.extract_sbom_metadata()
+            result = proc.extract_sbom_metadata()
+
+        assert len(result) == 1
+        assert result[0]['value'] == '0.18.0'
 
     def test_different_versions_warns_uses_amd64(self, processor_env):
         """Different versions across arches — warns but uses amd64 value."""

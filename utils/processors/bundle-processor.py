@@ -465,12 +465,14 @@ class bundle_processor:
 
                 LOGGER.info(f"  Extracting '{package_name}' version from SBOM for {env_var}...")
                 arch_versions = get_package_info(image_uri, package_name)
-                if 'amd64' not in arch_versions:
-                    LOGGER.error(f"  No amd64 version found for '{package_name}' in {env_var}, available: {list(arch_versions.keys())}")
-                    sys.exit(1)
-                version = arch_versions['amd64']
-                if len(set(arch_versions.values())) > 1:
-                    LOGGER.warning(f"  Version differs across architectures: {arch_versions} — using amd64 value")
+                if 'amd64' in arch_versions:
+                    version = arch_versions['amd64']
+                    if len(set(arch_versions.values())) > 1:
+                        LOGGER.warning(f"  Version differs across architectures: {arch_versions} — using amd64 value")
+                else:
+                    fallback_arch = next(iter(arch_versions))
+                    version = arch_versions[fallback_arch]
+                    LOGGER.warning(f"  No amd64 version found for '{package_name}' in {env_var}, falling back to {fallback_arch}: {version} (available: {list(arch_versions.keys())})")
                 new_name = f"{env_var}{suffix}"
                 LOGGER.info(f"    {new_name} = {version}")
                 new_env_vars.append({
