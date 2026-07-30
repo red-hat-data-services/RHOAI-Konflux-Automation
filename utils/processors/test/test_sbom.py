@@ -21,7 +21,7 @@ processors_root = os.path.abspath(os.path.join(os.path.dirname(__file__), f".." 
 if processors_root not in sys.path:
     sys.path.insert(0, processors_root)
 
-from utils.sbom import download_sbom, get_package_info
+from utils.sbom import download_sbom, get_package_info, _get_arch_digests
 
 
 # ============================================================================
@@ -389,6 +389,51 @@ class TestTagStripping:
         cosign_calls = [c for c in mock_run.call_args_list if c[0][0][0] == 'cosign']
         for call in cosign_calls:
             assert ':3.4@' not in call[0][0][3]
+
+
+# ============================================================================
+# _get_arch_digests error logging
+# ============================================================================
+
+class TestGetArchDigestsLogging:
+
+    @patch('utils.sbom.subprocess.run')
+    def test_logs_stderr_on_skopeo_failure(self, mock_run):
+        mock_run.return_value = mock_subprocess_result(
+            returncode=1, stderr='unauthorized: authentication required'
+        )
+
+        with patch('utils.sbom.LOGGER') as mock_logger:
+            result = _get_arch_digests(IMAGE)
+
+        assert result == []
+        mock_logger.warning.assert_called_once()
+        log_msg = mock_logger.warning.call_args[0][0]
+        assert 'unauthorized: authentication required' in log_msg
+        assert 'exit 1' in log_msg
+
+    @patch('utils.sbom.subprocess.run')
+    def test_logs_on_skopeo_timeout(self, mock_run):
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd='skopeo', timeout=60)
+
+        with patch('utils.sbom.LOGGER') as mock_logger:
+            result = _get_arch_digests(IMAGE)
+
+        assert result == []
+        mock_logger.warning.assert_called_once()
+        assert 'timed out' in mock_logger.warning.call_args[0][0]
+
+    @patch('utils.sbom.subprocess.run')
+    def test_logs_on_json_parse_error(self, mock_run):
+        mock_run.return_value = mock_subprocess_result(stdout='not valid json')
+
+        with patch('utils.sbom.LOGGER') as mock_logger:
+            result = _get_arch_digests(IMAGE)
+
+        assert result == []
+        mock_logger.warning.assert_called_once()
+        assert 'parse manifest JSON' in mock_logger.warning.call_args[0][0]
 
 
 # ============================================================================
