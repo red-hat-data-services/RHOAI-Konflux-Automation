@@ -3,6 +3,9 @@ Shared version parsing utilities for RHOAI processors.
 
 Provides OcpVersion and RhoaiVersion classes for semver-aware comparison
 of OpenShift Container Platform versions and RHOAI operator versions.
+
+Also provides satisfies_range() for evaluating OLM-skipRange-inspired
+semver range expressions against RhoaiVersion instances.
 """
 
 import re
@@ -165,3 +168,62 @@ class RhoaiVersion:
 
     def __repr__(self):
         return self.version
+
+
+# ---------------------------------------------------------------------------
+# Range matching (OLM-skipRange-inspired, deliberate subset of blang/semver)
+# ---------------------------------------------------------------------------
+
+_COMPARATOR_RE = re.compile(r'^(>=|>|<=|<|!=|=)?(.+)$')
+
+
+def _match_comparator(version: RhoaiVersion, token: str) -> bool:
+    """
+    Evaluate a single comparator token against a RhoaiVersion.
+
+    Supported tokens: '>=3.5.0', '<2.26.0', '!=3.2.1', '=2.25.0',
+    or bare '2.25.0' (implicit equality).
+    Versions in tokens are bare semver -- not 'rhods-operator.X.Y.Z'.
+    """
+    match = _COMPARATOR_RE.match(token.strip())
+    if not match:
+        raise ValueError(f"Invalid comparator token: {token!r}")
+    op = match.group(1) or '='
+    ver_str = match.group(2)
+    target = RhoaiVersion(ver_str)
+    if op == '>=':
+        return version >= target
+    if op == '>':
+        return version > target
+    if op == '<=':
+        return version <= target
+    if op == '<':
+        return version < target
+    if op == '=':
+        return version == target
+    if op == '!=':
+        return version != target
+    raise ValueError(f"Unsupported comparator operator: {op!r}")
+
+
+def satisfies_range(version: RhoaiVersion, range_str: str) -> bool:
+    """
+    Check whether *version* satisfies an OLM-inspired semver range string.
+
+    Clauses are OR'd (split on '||'); conditions within a clause are AND'd
+    (split on whitespace).  Returns False for empty / whitespace-only strings.
+
+    Examples:
+        satisfies_range(v('2.25.0'), '>=2.25.0 <2.26.0')          -> True
+        satisfies_range(v('3.2.1'),  '>=2.25.0 <2.26.0 || >=3.5.0') -> False
+        satisfies_range(v('3.5.0'),  '>=2.25.0 <2.26.0 || >=3.5.0') -> True
+    """
+    if not range_str or not range_str.strip():
+        return False
+    for clause in range_str.split('||'):
+        tokens = [t for t in clause.split() if t.strip()]
+        if not tokens:
+            continue
+        if all(_match_comparator(version, t) for t in tokens):
+            return True
+    return False

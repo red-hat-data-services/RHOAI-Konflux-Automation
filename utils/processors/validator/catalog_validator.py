@@ -3,8 +3,11 @@ Catalog Validator for RHOAI operator catalogs.
 
 Validates that every shipped RHOAI operator bundle is present in the correct
 catalog files, accounting for OCP-version-specific constraints: onboarding
-dates, discontinuation cutoffs, skip-bundle overrides, and the 3.x / OCP 4.19
+ranges, discontinuation ranges, skip-bundle overrides, and the 3.x / OCP 4.19
 minimum boundary.
+
+Uses range-based config fields (onboarded-range / discontinued-range) with
+OLM-skipRange-inspired semver expressions instead of single-value bounds.
 
 Supports two operations via the -op flag:
   validate-pcc:       Validates PCC (Production Catalog Cache) files
@@ -27,6 +30,9 @@ LOGGER = getLogger('processor')
 
 
 class catalog_validator:
+
+    DEFAULT_ONBOARDED_RANGE = '>=0.0.0'
+    DEFAULT_DISCONTINUED_RANGE = ''
 
     def __init__(self, build_config_path: str, catalog_folder_path: str,
                  shipped_rhoai_versions_path: str, operation: str,
@@ -54,21 +60,21 @@ class catalog_validator:
 
         global_ocp_versions = global_config['config']['supported-ocp-versions']
 
-        # Maps OCP version -> bundle version at which that OCP is discontinued
-        # (bundles at or above this version are not expected in the catalog)
-        self.discontinued_from_map = {
-            entry['version']: entry.get('discontinued-from', 'rhods-operator.9.99.99')
+        # Maps OCP version -> semver range expression for onboarded versions
+        # Versions that satisfy the range are expected to be present in the catalog.
+        self.onboarded_range_map = {
+            entry['version']: entry.get('onboarded-range', self.DEFAULT_ONBOARDED_RANGE)
             for entry in global_ocp_versions
         }
-        LOGGER.info(f"discontinued_from_map: {json.dumps(self.discontinued_from_map, indent=4)}")
+        LOGGER.info(f"onboarded_range_map: {json.dumps(self.onboarded_range_map, indent=4)}")
 
-        # Maps OCP version -> earliest bundle version that should appear
-        # (bundles below this version predate this OCP's onboarding)
-        self.onboarded_since_map = {
-            entry['version']: entry.get('onboarded-since', 'rhods-operator.0.0.0')
+        # Maps OCP version -> semver range expression for discontinued versions
+        # Versions that satisfy the range are NOT expected (offboarded).
+        self.discontinued_range_map = {
+            entry['version']: entry.get('discontinued-range', self.DEFAULT_DISCONTINUED_RANGE)
             for entry in global_ocp_versions
         }
-        LOGGER.info(f"onboarded_since_map: {json.dumps(self.onboarded_since_map, indent=4)}")
+        LOGGER.info(f"discontinued_range_map: {json.dumps(self.discontinued_range_map, indent=4)}")
 
         # Maps OCP version -> list of bundles explicitly excluded from validation
         self.skip_bundles_map = {
@@ -76,6 +82,14 @@ class catalog_validator:
             for entry in global_ocp_versions
         }
         LOGGER.info(f"skip_bundles_map: {json.dumps(self.skip_bundles_map, indent=4)}")
+
+        # Validate all range strings at load time to catch malformed config early
+        dummy = version_util.RhoaiVersion('0.0.0')
+        for ocp_ver, range_str in self.onboarded_range_map.items():
+            version_util.satisfies_range(dummy, range_str)
+        for ocp_ver, range_str in self.discontinued_range_map.items():
+            if range_str:
+                version_util.satisfies_range(dummy, range_str)
 
         # Build a list of (ocp_version, catalog_path) tuples mapping each supported OCP version
         # to its corresponding catalog file path, depending on the operation mode (PCC or relese version catalogs)
@@ -200,13 +214,9 @@ class catalog_validator:
             # Convert e.g. "v4.17" -> (4, 17) for version comparison
             parsed_ocp_version = version_util.OcpVersion(ocp_version)
 
-            # Boundaries for this OCP version: bundles outside [onboard, discontinued) are not expected
-            onboarded_since_version = version_util.RhoaiVersion(
-                self.onboarded_since_map.get(ocp_version, 'rhods-operator.0.0.0')
-            )
-            discontinued_from_version = version_util.RhoaiVersion(
-                self.discontinued_from_map.get(ocp_version, 'rhods-operator.9.99.99')
-            )
+            # Range expressions for this OCP version (resolved once per OCP, not per bundle)
+            onboarded_range = self.onboarded_range_map.get(ocp_version, self.DEFAULT_ONBOARDED_RANGE)
+            discontinued_range = self.discontinued_range_map.get(ocp_version, self.DEFAULT_DISCONTINUED_RANGE)
 
             for rhoai_version in self.shipped_rhoai_versions:
                 operator_name = f'{CONSTANTS.OPERATOR_NAME}.{rhoai_version}'
@@ -255,9 +265,14 @@ class catalog_validator:
                     LOGGER.warning(f'Ignoring absence of {operator_name} for OCP {ocp_version} (in skip-bundles list)')
                     continue
 
-                # Step 5: Skip if bundle is outside this OCP's supported version range [onboarded, discontinued).
-                if operator_version >= discontinued_from_version or operator_version < onboarded_since_version:
-                    LOGGER.debug(f'Ignoring absence of {operator_name} for OCP {ocp_version} (outside supported range)')
+                # Step 5a: Skip if bundle is not in this OCP's onboarded range
+                if not version_util.satisfies_range(operator_version, onboarded_range):
+                    LOGGER.debug(f'Ignoring absence of {operator_name} for OCP {ocp_version} (not in onboarded-range)')
+                    continue
+
+                # Step 5b: Skip if bundle is in this OCP's discontinued range
+                if version_util.satisfies_range(operator_version, discontinued_range):
+                    LOGGER.debug(f'Ignoring absence of {operator_name} for OCP {ocp_version} (in discontinued-range)')
                     continue
 
                 # Step 6: EA (Early Access) bundles get replaced by newer EA releases. Only the latest EA bundle is expected to remain; older ones are overwritten.
