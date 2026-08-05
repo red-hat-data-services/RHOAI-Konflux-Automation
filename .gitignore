@@ -51,6 +51,13 @@ wheels/
 *.swo
 *~
 
+# Logs
+*.log
+
+# Coverage
+.coverage
+htmlcov/
+
 # custom
 utils/operator-processor/*.yaml
 utils/operator-processor/*.json
