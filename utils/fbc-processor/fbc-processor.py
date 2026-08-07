@@ -1,6 +1,7 @@
-import os, requests
+import os, re, requests
 from jsonupdate_ng import jsonupdate_ng
 import argparse
+import subprocess
 import yaml
 import ruamel.yaml as ruyaml
 import json
@@ -188,7 +189,7 @@ def str_presenter(dumper, data):
 class snapshot_processor:
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
-    def __init__(self, snapshot_json_path:str, output_file_path:str, rhoai_version:str, build_config_path:str, catalog_build_args_file_path, build_type:str, image_filter:str=''):
+    def __init__(self, snapshot_json_path:str, output_file_path:str, rhoai_version:str, build_config_path:str, catalog_build_args_file_path, build_type:str, image_filter:str='', patch_yaml_path:str=''):
         self.snapshot_json_path = snapshot_json_path
         self.output_file_path = output_file_path
         self.image_filter = image_filter
@@ -198,6 +199,7 @@ class snapshot_processor:
         self.catalog_build_args_file_path = catalog_build_args_file_path
         self.git_meta = ''
         self.build_type = build_type
+        self.patch_yaml_path = patch_yaml_path
 
     def extract_images_from_snapshot(self):
         snapshot = json.load(open(self.snapshot_json_path))
@@ -246,17 +248,106 @@ class snapshot_processor:
         with open(self.catalog_build_args_file_path, "w") as f:
             f.write(self.git_meta)
 
+    def _build_reverse_repo_map(self):
+        """Build a reverse map from production repo name to quay source paths.
 
+        Returns a dict like:
+            {"odh-rhel9-operator": ["rhoai-private/odh-rhel9-operator", "rhoai/odh-rhel9-operator"]}
+
+        rhoai-private entries come first so callers can prefer them.
+        """
+        reverse_map = defaultdict(list)
+        for registry_entry in self.build_config['config']['replacements']:
+            for source_path, target_path in registry_entry['repo_mappings'].items():
+                target_repo = target_path.split('/')[-1]
+                reverse_map[target_repo].append(source_path)
+        # Sort so rhoai-private entries come first
+        for repo in reverse_map:
+            reverse_map[repo].sort(key=lambda p: (0 if 'rhoai-private' in p else 1, p))
+        return reverse_map
+
+    def get_images_from_existing_bundle(self):
+        """Extract images from the bundle referenced in catalog-patch.yaml instead of querying Quay for latest."""
+        patch_doc = yaml.safe_load(open(self.patch_yaml_path))
+        bundle_entries = patch_doc.get('patch', {}).get('olm.bundle', [])
+        if not bundle_entries:
+            print('error: no olm.bundle entries in catalog-patch.yaml')
+            sys.exit(1)
+
+        bundle_image = str(bundle_entries[0])
+        print(f'Bundle image from catalog-patch.yaml: {bundle_image}')
+
+        print(f'Rendering bundle image to extract relatedImages...')
+        result = subprocess.run(
+            ['opm', 'render', bundle_image],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f'error: opm render failed: {result.stderr}')
+            sys.exit(1)
+
+        bundle_obj = json.loads(result.stdout)
+        related_images = bundle_obj.get('relatedImages', [])
+        if not related_images:
+            print('warning: no relatedImages found in bundle')
+
+        reverse_map = self._build_reverse_repo_map()
+        latest_images = []
+
+        for related_image in related_images:
+            image_ref = related_image['image']
+            if '@' not in image_ref:
+                continue
+
+            digest = image_ref.split('@')[1]
+            # e.g. registry.redhat.io/rhoai/odh-rhel9-operator -> odh-rhel9-operator
+            prod_repo = image_ref.split('@')[0].split('/')[-1]
+
+            latest_images.append({
+                'name': f'RELATED_IMAGE_{prod_repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE',
+                'value': DoubleQuotedScalarString(image_ref)
+            })
+
+            # Try each mapped quay source to get git labels (rhoai-private first)
+            sources = reverse_map.get(prod_repo, [])
+            if not sources:
+                print(f'  {prod_repo}: no repo_mapping found, skipping git labels')
+                continue
+
+            labels_found = False
+            for source_path in sources:
+                org = source_path.split('/')[0]
+                repo_name = source_path.split('/')[-1]
+                try:
+                    qc = quay_controller(org)
+                    labels = qc.get_git_labels(repo_name, digest)
+                    self.generate_catalog_build_args(labels)
+                    print(f'  {prod_repo}: got git labels from {org}/{repo_name}')
+                    labels_found = True
+                    break
+                except (Exception, SystemExit) as e:
+                    print(f'  {prod_repo}: {org}/{repo_name} failed ({e}), trying next source')
+
+            if not labels_found:
+                print(f'  {prod_repo}: could not get git labels from any source')
+
+        print('latest_images', json.dumps(latest_images, indent=4))
+        json.dump(latest_images, indent=4, fp=open(self.output_file_path, 'w'))
 
 
 BASE_URL = 'https://quay.io/api/v1'
 class quay_controller:
     def __init__(self, org:str):
         self.org = org
+
+    def _token_env_var(self):
+        normalized = re.sub(r'[^A-Za-z0-9]', '_', self.org).upper()
+        return normalized + '_QUAY_API_TOKEN'
+
     def get_tag_details(self, repo, tag):
         result_tag = {}
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=true'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         tags = response.json()['tags']
@@ -265,7 +356,7 @@ class quay_controller:
         return result_tag
     def get_all_tags(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/tag/?specificTag={tag}&onlyActiveTags=false'
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         tag = response.json()['tags']
@@ -274,7 +365,7 @@ class quay_controller:
     def get_git_labels(self, repo, tag):
         url = f'{BASE_URL}/repository/{self.org}/{repo}/manifest/{tag}/labels'
         # ?filter=git, throwing 403 forbidden, due to this need to check, seems quay issue, disabling the fitler for now
-        headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
+        headers = {'Authorization': f'Bearer {os.environ[self._token_env_var()]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
         if 'labels' in response.json():
@@ -314,6 +405,12 @@ if __name__ == '__main__':
                         help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
+    parser.add_argument('--use-existing-digests', action='store_true', default=False,
+                        help='For extract-snapshot-images: read bundle image from catalog-patch.yaml (-p) '
+                             'instead of querying Quay for latest signed image. Uses repo_mappings from '
+                             'build-config.yaml (-b) to reverse-map production image names back to their '
+                             'quay source repos for git label lookups (prefers rhoai-private entries).',
+                        dest='use_existing_digests')
 
     args = parser.parse_args()
 
@@ -321,8 +418,11 @@ if __name__ == '__main__':
         processor = fbc_processor(build_config_path=args.build_config_path, catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, single_bundle_path=args.single_bundle_path, output_file_path=args.output_file_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, purge_bundles=args.purge_bundles)
         processor.patch_catalog_yaml()
     elif args.operation.lower() == 'extract-snapshot-images':
-        processor = snapshot_processor(snapshot_json_path=args.snapshot_json_path, output_file_path=args.output_file_path, image_filter=args.image_filter, rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, catalog_build_args_file_path=args.catalog_build_args_file_path, build_type=args.build_type)
-        processor.get_all_latest_images()
+        processor = snapshot_processor(snapshot_json_path=args.snapshot_json_path, output_file_path=args.output_file_path, image_filter=args.image_filter, rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, catalog_build_args_file_path=args.catalog_build_args_file_path, build_type=args.build_type, patch_yaml_path=args.patch_yaml_path)
+        if args.use_existing_digests:
+            processor.get_images_from_existing_bundle()
+        else:
+            processor.get_all_latest_images()
 
         # c = '/Users/dchouras/RHODS/DevOps/RBC_MAIN/pcc/catalog-v4.18.yaml'
         # p = '/Users/dchouras/RHODS/DevOps/RBC-RHDS/catalog/catalog-patch.yaml'
