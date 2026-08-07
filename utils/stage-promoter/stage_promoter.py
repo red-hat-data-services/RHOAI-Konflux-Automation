@@ -1,34 +1,72 @@
-import os, requests
+import os
+import re
+import requests
 import time
-
+import openshift_client as oc
 from jsonupdate_ng import jsonupdate_ng
 import argparse
 import yaml
 import ruamel.yaml as ruyaml
 import json
 from collections import defaultdict
+from openshift_client.model import OpenShiftPythonException
+
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import base64
 import sys
 
+class OpenshiftVersion(tuple):
+    def __new__(cls, version_str):
+        regex = re.match(r'v(\d+)\.(\d+)', version_str)
+        if not regex:
+            regex = re.match(r'(\d+)\.(\d+)', version_str)
+            if not regex:
+                raise ValueError(f"Was not able to parse {version_str}")
+
+        x = regex.group(1)
+        y = regex.group(2)
+
+        return super().__new__(cls, (int(x), int(y)))
+
+    def __init__(self, version_str):
+        self.version = version_str
+
 class stage_promoter:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
     PACKAGE_NAME = 'rhods-operator'
+    # Channel names that are reset from patch (no merge with base catalog).
+    RESET_CHANNELS = {'beta'}
+    # Version after PACKAGE_NAME.: X.Y.Z-ea.N or X.Y.Z-ea.N.H (H optional). X=0-9, Y/Z=0-99.
+    EA_VERSION_PATTERN = re.compile(r"^[0-9]\.[0-9]{1,2}\.[0-9]{1,2}-ea\.[0-9]+(\.[0-9]+)?$")
 
-    def __init__(self, catalog_yaml_path:str, patch_yaml_path:str, release_catalog_yaml_path:str, output_file_path:str, rhoai_version:str):
+    def __init__(self, catalog_yaml_path:str, patch_yaml_path:str, release_catalog_yaml_path:str, output_file_path:str, rhoai_version:str, ocp_version:str, purge_bundles:str, skip_ea_pruning:bool=False, skip_purge:bool=False):
         self.catalog_yaml_path = catalog_yaml_path
+
+        if ocp_version:
+            self.ocp_version = ocp_version
+        else:
+            # a hack to get the ocp version
+            ocp_regex = re.search(r'catalog/(.*?)/rhods-operator/catalog.yaml', release_catalog_yaml_path)
+            if not ocp_regex:
+                raise ValueError(f"was not able to parse OCP version from release catalog path: {release_catalog_yaml_path}")
+
+            self.ocp_version = ocp_regex.group(1)
+
         self.patch_yaml_path = patch_yaml_path
         self.release_catalog_yaml_path = release_catalog_yaml_path
         self.output_file_path = output_file_path
         self.catalog_dict:defaultdict = self.parse_catalog_yaml()
+        if purge_bundles:
+            self.purge_olm_bundles(purge_bundles.split(","))
         self.patch_dict = self.parse_patch_yaml()
         self.rhoai_version = rhoai_version
+        self.skip_ea_pruning = skip_ea_pruning
+        self.skip_purge = skip_purge
         self.current_bundle_name = f'{self.PACKAGE_NAME}.{self.rhoai_version.lower().strip("v")}'
 
     def parse_catalog_yaml(self):
         # objs = yaml.safe_load_all(open(self.catalog_yaml_path))
         objs = ruyaml.load_all(open(self.catalog_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True)
-        print(type(objs))
         catalog_dict = defaultdict(dict)
         for obj in objs:
             catalog_dict[obj['schema']][obj['name']] = obj
@@ -38,28 +76,52 @@ class stage_promoter:
         objs = yaml.safe_load_all(open(self.release_catalog_yaml_path))
         release_catalog_dict = defaultdict(dict)
         BUNDLE_SCHEMA = 'olm.bundle'
+        patched = False
+
         for obj in objs:
             release_catalog_dict[obj['schema']][obj['name']] = obj
         current_release_bundle_schema = [olm_bundle for name, olm_bundle in release_catalog_dict[BUNDLE_SCHEMA].items() if name == self.current_bundle_name ]
         if current_release_bundle_schema and len(current_release_bundle_schema) == 1:
             current_release_bundle_schema = current_release_bundle_schema[0]
-            self.catalog_dict[BUNDLE_SCHEMA][current_release_bundle_schema['name']] = current_release_bundle_schema
+            if self.current_bundle_name not in self.catalog_dict[BUNDLE_SCHEMA]:
+                self.catalog_dict[BUNDLE_SCHEMA][current_release_bundle_schema['name']] = current_release_bundle_schema
+                patched = True
         elif not current_release_bundle_schema:
             raise Exception(f'No olm.bundle schema found for {self.current_bundle_name} in {self.release_catalog_yaml_path}')
         elif len(current_release_bundle_schema) > 1:
             raise Exception(f'Multiple olm.bundle schema found for {self.current_bundle_name} in {self.release_catalog_yaml_path}')
 
+        return patched
+
 
     def parse_patch_yaml(self):
         return yaml.safe_load(open(self.patch_yaml_path))
     def patch_catalog_yaml(self):
-        if 'olm.package' in self.patch_dict['patch']:
-            self.patch_olm_package()
-        if 'olm.channels' in self.patch_dict['patch']:
-            self.patch_olm_channels()
-        self.patch_olm_bundles()
+        patched = self.patch_olm_bundles()
+        if patched:
+            if 'olm.package' in self.patch_dict['patch']:
+                self.patch_olm_package()
+            if 'olm.channels' in self.patch_dict['patch']:
+                self.patch_olm_channels()
 
-        self.write_output_catalog()
+            if not self.skip_purge:
+                self.purge_unused_olm_bundles()
+            self.write_output_catalog()
+
+    def purge_olm_bundles(self, purge_bundles):
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name in purge_bundles]
+        for name in to_delete:
+            del self.catalog_dict['olm.bundle'][name]
+
+    def purge_unused_olm_bundles(self):
+        channel_objs = self.catalog_dict['olm.channel']
+        referenced_bundles = set()
+        for channel_name, channel_obj in channel_objs.items():
+            for entry in channel_obj['entries']:
+                bundle_name = entry['name']
+                referenced_bundles.add(bundle_name)
+        to_delete = [name for name in self.catalog_dict['olm.bundle'] if name not in referenced_bundles]
+        self.purge_olm_bundles(to_delete)
 
     def write_output_catalog(self):
         docs = [doc for schema, schema_val in self.catalog_dict.items() for name, doc in schema_val.items()]
@@ -80,21 +142,94 @@ class stage_promoter:
         SCHEMA = 'olm.channel'
         PATCH_SCHEMA = 'olm.channels'
         for channel in self.patch_dict['patch'][PATCH_SCHEMA]:
-            if channel['name'] in self.catalog_dict[SCHEMA]:
+            if channel['name'] in self.catalog_dict[SCHEMA] and channel['name'] not in self.RESET_CHANNELS:
                 self.catalog_dict[SCHEMA][channel['name']] = jsonupdate_ng.updateJson(self.catalog_dict[SCHEMA][channel['name']], channel, meta={'listPatchScheme': {'$.entries': {'key': 'name'}}})
             else:
+                # If reset channel or new channel, take full definition from patch.
                 self.catalog_dict[SCHEMA][channel['name']] = channel
 
+        # if ocp v4.19+ is supported, then we expect the beta channel to exist and follow ea drop scheme
+        supports_ea_drops = OpenshiftVersion(self.ocp_version) >= OpenshiftVersion('v4.19')
+
+        # Keep only the latest EA drop in the beta channel to support fresh install only.
+        if 'beta' in self.catalog_dict[SCHEMA] and supports_ea_drops and not self.skip_ea_pruning:
+            self.prune_channel_to_latest_ea(SCHEMA, 'beta')
+
+    # updates a given OLM channel so that only the latest Early Access (EA) version remains in entries.
+    def prune_channel_to_latest_ea(self, schema, channel_name):
+        channel = self.catalog_dict[schema][channel_name]
+        entries = [e for e in (channel.get('entries') or []) if e.get('name')]
+        ea = [e for e in entries if 'ea' in (e.get('name') or '')]
+        if not ea:
+            raise ValueError(f"Channel {channel_name!r} has no EA versions. Entries: {entries}")
+        # How largest is decided: key = (release, ea_segments). Tuples compared left-to-right (lexicographic).
+        # Example keys:
+        #   3.4.0-ea.1   -> ((3, 4, 0), (1,))
+        #   3.4.0-ea.1.1 -> ((3, 4, 0), (1, 1))
+        #   3.14.0-ea.2  -> ((3, 14, 0), (2,))
+        # Step 1: compare release; (3,4,0) < (3,14,0) so 3.14.0-ea.2 wins over 3.4.0-ea.*.
+        # Step 2: if release equal, compare ea_segments; (1,) < (1,1) so ea.1.1 > ea.1. max() picks entry with largest key.
+        latest_ea_entry = max(ea, key=lambda e: self.parse_ea_entry_name(e['name']))
+        channel['entries'] = [{'name': latest_ea_entry['name']}]
+
+    def parse_ea_entry_name(self, entry_name: str):
+        """
+        Parse EA OLM entry name into a comparable tuple for ordering. Raises ValueError if invalid.
+
+        entry_name must be in the below format:
+        - rhods-operator.X.Y.Z-ea.N
+        - rhods-operator.X.Y.Z-ea.N.H
+        X = 0-9, Y/Z = 0-99, N/H = non-negative integers.
+
+        Returns:
+            (release, ea_segments): Comparable tuple for ordering. Example:
+                parse_ea_entry_name("rhods-operator.3.4.0-ea.1.1") -> ((3, 4, 0), (1, 1))
+        """
+        entry_name = entry_name.strip()
+        prefix = self.PACKAGE_NAME + "."
+        version_str = entry_name[len(prefix):] if entry_name.startswith(prefix) else ""
+        if not version_str or not self.EA_VERSION_PATTERN.match(version_str):
+            raise ValueError(
+                f"Invalid EA version for entry {entry_name!r}: must be {prefix!r} followed by "
+                "X.Y.Z-ea.N or X.Y.Z-ea.N.H (e.g. 3.4.0-ea.1, 3.4.0-ea.1.1)"
+            )
+        s = version_str
+        base, _, suffix = s.partition("-ea")
+        base = base.strip(".-")
+        suffix = suffix.strip(".")
+        try:
+            parts = [x for x in base.split(".") if x]
+            if len(parts) != 3:
+                raise ValueError(f"Release must be exactly X.Y.Z, got {base!r}")
+            release = tuple(int(x) for x in parts)
+            x_val, y_val, z_val = release
+            if not (0 <= x_val <= 9):
+                raise ValueError(f"X must be 0-9, got {x_val}")
+            if not (0 <= y_val <= 99 and 0 <= z_val <= 99):
+                raise ValueError(f"Y and Z must be 0-99, got {y_val}, {z_val}")
+        except ValueError as err:
+            raise ValueError(f"Invalid EA version for entry {entry_name!r}: {err}") from err
+        if not suffix:
+            ea_segments = (0,)
+        else:
+            try:
+                ea_segments = tuple(int(x) for x in suffix.split(".") if x)
+            except ValueError as err:
+                raise ValueError(f"Invalid EA version for entry {entry_name!r}: {err}") from err
+            if not ea_segments:
+                ea_segments = (0,)
+        return (release, ea_segments)
 
     def patch_olm_bundles(self):
-        self.patch_current_release_bundle_schema()
+        return self.patch_current_release_bundle_schema()
+
 
 class snapshot_processor:
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
     FBC_FRAGMENT_REPO = 'rhoai-fbc-fragment'
     QUAY_BASE_URI = 'quay.io/rhoai'
-    def __init__(self, rhoai_version:str, build_config_path:str, timeout:str, output_file_path:str, git_commit:str):
+    def __init__(self, rhoai_version:str, build_config_path:str, timeout:str, output_file_path:str, git_commit:str, pipelineruns:str, pipeline_type:str, failed_pipelines_info_path:str):
         self.output_file_path = output_file_path
         self.rhoai_version = rhoai_version
         self.build_config_path = build_config_path
@@ -102,11 +237,105 @@ class snapshot_processor:
         self.ocp_versions_for_release = self.build_config['config']['supported-ocp-versions']['release']
         self.timeout = int(timeout) * 60
         self.git_commit = git_commit
+        self.pipelineruns = pipelineruns.split(' ')
+        self.pipeline_type = pipeline_type
+        self.failed_pipelines_info_path = failed_pipelines_info_path
+        if os.path.exists(self.failed_pipelines_info_path):
+            os.remove(self.failed_pipelines_info_path)
+        self.slack_failure_message_path = 'utils/slack_failure_message.txt'
+        if os.path.exists(self.slack_failure_message_path):
+            os.remove(self.slack_failure_message_path)
+
+    def monitor_fbc_pipelines(self):
+        print('OpenShift client version: {}'.format(oc.get_client_version()))
+        type = self.pipeline_type
+
+        pipeline_base_url = 'https://konflux-ui.apps.stone-prod-p02.hjvn.p1.openshiftapps.com/ns'
+        workspace = 'rhoai' if type == 'build' else 'rhtap-releng' if type == 'release' else ''
+        project = 'rhoai-tenant' if type == 'build' else 'rhtap-releng-tenant' if type == 'release' else ''
+
+        completed_pipelines = {}
+        failed_pipelines = {}
+        unknown_pipelines = {}
+
+        running_statuses = ['Running', 'ResolvingTaskRef']
+        success_statuses = ['Succeeded', 'Completed']
+        failed_statuses = ['Failed', 'PipelineRunTimeout', 'PipelineValidationFailed', 'CreateRunFailed', 'CouldntGetTask', 'ReasonCouldntCreateOrUpdateAffinityAssistantStatefulSet', 'CancelledRunningFinally']
+        unknown_status = ['Unknown']
+
+        with oc.project(project), oc.timeout(180 * 60):
+
+            while len(failed_pipelines) + len(completed_pipelines) < len(self.pipelineruns):
+                for pr in self.pipelineruns:
+                    if pr in failed_pipelines:
+                        print(f'FBC stage {type} pipeline {pr} failed with status {failed_pipelines[pr]["status"]}..')
+                    elif pr in completed_pipelines:
+                        print(
+                            f'FBC stage {type} pipeline {pr} is successfully completed with status {completed_pipelines[pr]["status"]}..')
+                    else:
+                        try:
+                            pr_object = oc.selector(f'pr/{pr}').object()
+                            status = pr_object.model.status.conditions[0].reason
+                        except OpenShiftPythonException as e:
+                            status = 'Unknown'
+                            print(e)
+
+                        print(pr, status)
+                        if status in running_statuses:
+                            print(f'FBC stage {type} pipeline {pr} is still running..')
+                        elif status in success_statuses:
+                            print(f'FBC stage {type} pipeline {pr} is successfully completed with status {status}..')
+                            completed_pipelines[pr] = {'status': status,
+                                                    'application': pr_object.model.metadata.labels[
+                                                        'appstudio.openshift.io/application']}
+                        #elif status in failed_statuses:
+                        else:
+                            print(f'FBC stage {type} pipeline {pr} failed with status {status}..')
+                            failed_pipelines[pr] = {'status': status,
+                                                    'message': pr_object.model.status.conditions[0].message,
+                                                    'application': pr_object.model.metadata.labels[
+                                                        'appstudio.openshift.io/application']}
+                time.sleep(1 * 15)
+
+            if len(failed_pipelines):
+                yaml.safe_dump({'failed_pipelines': list(failed_pipelines.keys())}, open(self.failed_pipelines_info_path, 'w'))
+                slack_failure_message = f':alert: Following stage {type} pipeline(s) failed for {self.rhoai_version}, please check the logs:'
+                print('\n================ FAILURE SUMMARY ================')
+                for pr, data in failed_pipelines.items():
+                    print(f'****** PipelineRun - {pr} ******')
+                    pipeline_url = f'{pipeline_base_url}/{project}/applications/{data["application"]}/pipelineruns/{pr}/logs'
+                    print(f'FBC stage {type} pipeline {pr} failed with status {data["status"]}')
+                    print(f'Error: {data["message"]}')
+                    print(f'Please check full logs at {pipeline_url}')
+                    print('\n')
+                    slack_failure_message += f'\n* <{pipeline_url}|{pr}>: {data["message"]}'
+                open(self.slack_failure_message_path, 'w').write(slack_failure_message)
+            else:
+                print(f'All the FBC stage {type} pipelines are successfully completed!!')
+                if type == 'build':
+                    slack_message = f':staging-green: Successfully pushed *{self.rhoai_version} to stage*!'
+                    qc = quay_controller('rhoai')
+                    fbc_images = {}
+                    for ocp_version in self.ocp_versions_for_release:
+                        fbc_image_tag = f'ocp-{ocp_version.strip("v")}-{self.rhoai_version}-{self.git_commit}'
+                        print(f'getting images for tag - {fbc_image_tag}')
+                        tags = qc.get_all_tags(self.FBC_FRAGMENT_REPO, fbc_image_tag)
+                        for tag in tags:
+                            sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
+                            signature = qc.get_tag_details(self.FBC_FRAGMENT_REPO, sig_tag)
+                            if signature:
+                                fbc_image = f'{self.QUAY_BASE_URI}/{self.FBC_FRAGMENT_REPO}@{tag["manifest_digest"]}'
+                                fbc_images[ocp_version] = fbc_image
+                                slack_message += f'\n• FBCF image {ocp_version}: {fbc_image}'
+
+                    json.dump(fbc_images, open(self.output_file_path, 'w'))
+                    open('utils/slack_message.txt', 'w').write(slack_message)
 
     def monitor_fbc_builds(self):
         fbc_images = {}
         qc = quay_controller('rhoai')
         time_lapsed = 0
+        delay_sec = 30
         def all_fbc_builds_finished():
             all_versions_covered = True
             for ocp_version in self.ocp_versions_for_release:
@@ -127,9 +356,9 @@ class snapshot_processor:
                     signature = qc.get_tag_details(self.FBC_FRAGMENT_REPO, sig_tag)
                     if signature:
                         fbc_images[ocp_version] = f'{self.QUAY_BASE_URI}/{self.FBC_FRAGMENT_REPO}@{tag["manifest_digest"]}'
-            time.sleep(45)
-            time_lapsed += 60
-            print("time_lapsed - ", str(60), " sec")
+            time.sleep(delay_sec)
+            time_lapsed += delay_sec
+            print("time_lapsed - ", str(delay_sec), " sec")
 
         missing_images = []
         for ocp_version in self.ocp_versions_for_release:
@@ -188,6 +417,64 @@ class quay_controller:
             print(response.json())
             sys.exit(1)
 
+class prereqs_checker:
+    def __init__(self, rhoai_version:str, build_type:str, conforma_results_file_path:str, smokes_results_file_path:str):
+        self.rhoai_version = rhoai_version
+        self.build_type = build_type
+        self.slack_failure_message_path = 'utils/slack_failure_message.txt'
+        if os.path.exists(self.slack_failure_message_path):
+            os.remove(self.slack_failure_message_path)
+
+        self.conforma_results_file_path = conforma_results_file_path
+        self.conforma_results = yaml.safe_load(open(self.conforma_results_file_path))
+
+        self.smokes_results_file_path = smokes_results_file_path
+        self.smokes_results = yaml.safe_load(open(self.smokes_results_file_path))
+
+        self.smokes_tolerance_percentage = 25
+        self.slack_failure_message = f':alert: {self.build_type} stage push failed for *{self.rhoai_version}* due to unsuccessful prerequisites checks:'
+        self.cfr_repo_url = f'https://github.com/red-hat-data-services/conforma-reporter/tree/{self.rhoai_version}'
+
+    def check_prerequisites_status(self):
+        conforma_green = self.check_conforma_status()
+        smokes_green = self.check_smokes_status()
+
+        if not conforma_green or not smokes_green:
+            open(self.slack_failure_message_path, 'w').write(self.slack_failure_message)
+        else:
+            print('All prerequisite checks are successful, moving ahead with the stage push.. ')
+
+    def check_conforma_status(self):
+        print('Checking conforma results..')
+        component_errors = int(self.conforma_results['summary']['component_violations'])
+        fbc_errors = int(self.conforma_results['summary']['fbc_violations'])
+        print(f'Found {component_errors} conforma violations for components and {fbc_errors} conforma violations for FBC fragment')
+        if component_errors > 0:
+            self.slack_failure_message += f'\n• Conforma validation failed for *components*, check more details at <{self.cfr_repo_url}/components-violations.md|Components-Conforma-Violations>'
+            print(f'Conforma validation failed for components, check more details at {self.cfr_repo_url}/components-violations.md')
+        if fbc_errors > 0:
+            self.slack_failure_message += f'\n• Conforma validation failed for *FBC*, check more details at <{self.cfr_repo_url}/fbc-violations.md|FBC-Conforma-Violations>'
+            print(f'Conforma validation failed for FBC, check more details at {self.cfr_repo_url}/fbc-violations.md')
+
+        success = component_errors == 0 and fbc_errors == 0
+        return success
+
+
+    def check_smokes_status(self):
+        print('Checking smoke results..')
+        total_tests = int(self.smokes_results['test_summary']['Total'])
+        failed_tests = int(self.smokes_results['test_summary']['Failed'])
+        print(f'Found {failed_tests} test failures out of total {total_tests} tests executed')
+        success = failed_tests <= total_tests * (self.smokes_tolerance_percentage/100)
+
+        if not success:
+            self.slack_failure_message += f'\n• More than {self.smokes_tolerance_percentage}% smoke tests failed, check more details at <{self.cfr_repo_url}/smoke_test_report.html|Smoke-Test-Report>'
+            print(f'More than {self.smokes_tolerance_percentage}% smoke tests failed, check more details at {self.cfr_repo_url}/smoke_test_report.html')
+        return success
+
+
+
+
 def str_presenter(dumper, data):
     if data.count('\n') > 0:
         return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
@@ -198,31 +485,51 @@ def str_presenter(dumper, data):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-op', '--operation', required=False,
-                        help='Operation code, supported values are "stage-catalog-patch" and "monitor-fbc-builds"', dest='operation')
+                        help='Operation code, supported values are "stage-catalog-patch", "monitor-fbc-builds", "monitor-fbc-pipelines" and "check-prerequisite-status"', dest='operation')
     parser.add_argument('-c', '--catalog-yaml-path', required=False,
                         help='Path of the catalog.yaml from the main branch.', dest='catalog_yaml_path')
     parser.add_argument('-p', '--patch-yaml-path', required=False,
                         help='Path of the catalog-patch.yaml from the release branch.', dest='patch_yaml_path')
+    parser.add_argument('--purge-bundles', required=False, default='',
+                        help='olm.bundles to purge from the catalog yaml', dest='purge_bundles')
     parser.add_argument('-r', '--release-catalog-yaml-path', required=False,
                         help='Path of the catalog.yaml from the release branch', dest='release_catalog_yaml_path')
     parser.add_argument('-o', '--output-file-path', required=False,
                         help='Path of the output catalog yaml', dest='output_file_path')
     parser.add_argument('-v', '--rhoai-version', required=False,
                         help='The version of Openshift-AI being processed', dest='rhoai_version')
+    parser.add_argument('--ocp-version', required=False,
+                        help='The version of OCP to run the stage promoter on', dest='ocp_version')
     parser.add_argument('-t', '--timeout', required=False,
                         help='Timeout while waiting for FBC builds to finish', dest='timeout')
     parser.add_argument('-b', '--build-config-path', required=False,
                         help='Path of the build-config.yaml', dest='build_config_path')
     parser.add_argument('-g', '--git-commit', required=False,
                         help='expected git.commit of the FBC images', dest='git_commit')
+    parser.add_argument('-prs', '--pipelineruns', required=False, default='', dest='pipelineruns')
+    parser.add_argument('-pt', '--pipeline-type', required=False, default='', dest='pipeline_type')
+    parser.add_argument('-fp', '--failed-pipelines-info-path', required=False, default='', dest='failed_pipelines_info_path')
+    parser.add_argument('-cfr', '--conforma-results-file-path', required=False, default='', dest='conforma_results_file_path')
+    parser.add_argument('-smr', '--smokes-results-file-path', required=False, default='', dest='smokes_results_file_path')
+    parser.add_argument('-bt', '--build-type', required=False, default='nightly', dest='build_type')
+    parser.add_argument('--skip-ea-pruning', action='store_true', default=False,
+                        help='Skip EA pruning of the beta channel (for older releases without EA versions)', dest='skip_ea_pruning')
+    parser.add_argument('--skip-purge', action='store_true', default=False,
+                        help='Skip purging unused olm.bundles (for multi-branch runs where bundles are added incrementally)', dest='skip_purge')
     args = parser.parse_args()
 
     if args.operation.lower() == 'stage-catalog-patch':
-        promoter = stage_promoter(catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, release_catalog_yaml_path=args.release_catalog_yaml_path, output_file_path=args.output_file_path, rhoai_version=args.rhoai_version)
+        promoter = stage_promoter(catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, release_catalog_yaml_path=args.release_catalog_yaml_path, output_file_path=args.output_file_path, rhoai_version=args.rhoai_version, ocp_version=args.ocp_version, purge_bundles=args.purge_bundles, skip_ea_pruning=args.skip_ea_pruning, skip_purge=args.skip_purge)
         promoter.patch_catalog_yaml()
     elif args.operation.lower() == 'monitor-fbc-builds':
-        processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit)
+        processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit, pipelineruns=args.pipelineruns, pipeline_type=args.pipeline_type, failed_pipelines_info_path=args.failed_pipelines_info_path)
         processor.monitor_fbc_builds()
+    elif args.operation.lower() == 'monitor-fbc-pipelines':
+        processor = snapshot_processor(rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, timeout=args.timeout, output_file_path=args.output_file_path, git_commit=args.git_commit, pipelineruns=args.pipelineruns, pipeline_type=args.pipeline_type, failed_pipelines_info_path=args.failed_pipelines_info_path)
+        processor.monitor_fbc_pipelines()
+    elif args.operation.lower() == 'check-prerequisite-status':
+        checker = prereqs_checker(rhoai_version=args.rhoai_version, build_type=args.build_type, conforma_results_file_path=args.conforma_results_file_path, smokes_results_file_path=args.smokes_results_file_path)
+        checker.check_prerequisites_status()
 
 
 
