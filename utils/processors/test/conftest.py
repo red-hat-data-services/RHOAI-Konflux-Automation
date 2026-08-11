@@ -46,7 +46,7 @@ def write_global_config(path, ocp_entries):
     Write a global config.yaml.
 
     *ocp_entries* is a list of dicts, each with at least 'version' and optionally
-    'discontinued-from', 'onboarded-since', 'skip-bundles'.
+    'onboarded-range', 'discontinued-range', 'skip-bundles'.
     """
     data = {'config': {'supported-ocp-versions': ocp_entries}}
     with open(path, 'w') as f:

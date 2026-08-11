@@ -394,15 +394,15 @@ class TestExpected3xAbsence:
 # ============================================================================
 
 class TestDiscontinuityAndOnboarding:
-    """Bundles outside the [onboarded-since, discontinued-from) window
+    """Bundles outside the onboarded-range or inside the discontinued-range
     for an OCP version should be ignored when missing."""
 
     def test_discontinued_bundle_not_flagged(self, make_validator, caplog):
-        """Bundle >= discontinued-from should be silently ignored."""
+        """Bundle in discontinued-range should be silently ignored."""
         ocp_versions = ['v4.19']
         global_entries = [{
             'version': 'v4.19',
-            'discontinued-from': 'rhods-operator.2.19.0',
+            'discontinued-range': '>=2.19.0',
         }]
         shipped = ['v2.16.0', 'v2.19.0', 'v2.25.0']
         catalogs = {'v4.19': ['rhods-operator.2.16.0']}
@@ -417,15 +417,15 @@ class TestDiscontinuityAndOnboarding:
         with caplog.at_level(logging.DEBUG):
             validator.validate()
 
-        assert "outside supported range" in caplog.text
+        assert "in discontinued-range" in caplog.text
         assert "Validation failed" not in caplog.text
 
     def test_before_onboarding_not_flagged(self, make_validator, caplog):
-        """Bundle < onboarded-since should be silently ignored."""
+        """Bundle not in onboarded-range should be silently ignored."""
         ocp_versions = ['v4.20']
         global_entries = [{
             'version': 'v4.20',
-            'onboarded-since': 'rhods-operator.2.25.0',
+            'onboarded-range': '>=2.25.0',
         }]
         shipped = ['v2.16.0', 'v2.19.0', 'v2.25.0']
         catalogs = {'v4.20': ['rhods-operator.2.25.0']}
@@ -440,7 +440,7 @@ class TestDiscontinuityAndOnboarding:
         with caplog.at_level(logging.DEBUG):
             validator.validate()
 
-        assert "outside supported range" in caplog.text
+        assert "not in onboarded-range" in caplog.text
         assert "Validation failed" not in caplog.text
 
     def test_within_window_is_flagged(self, make_validator, caplog):
@@ -448,8 +448,7 @@ class TestDiscontinuityAndOnboarding:
         ocp_versions = ['v4.20']
         global_entries = [{
             'version': 'v4.20',
-            'onboarded-since': 'rhods-operator.2.25.0',
-            'discontinued-from': 'rhods-operator.9.99.99',
+            'onboarded-range': '>=2.25.0',
         }]
         shipped = ['v2.25.0', 'v3.0.0']
         catalogs = {'v4.20': ['rhods-operator.2.25.0']}
@@ -567,8 +566,8 @@ class TestSupersededEA:
         ocp_versions = ['v4.19', 'v4.20', 'v4.21']
         global_entries = [
             plain_ocp('v4.19'),
-            {'version': 'v4.20', 'onboarded-since': 'rhods-operator.2.25.0'},
-            {'version': 'v4.21', 'onboarded-since': 'rhods-operator.2.25.0'},
+            {'version': 'v4.20', 'onboarded-range': '>=2.25.0'},
+            {'version': 'v4.21', 'onboarded-range': '>=2.25.0'},
         ]
         shipped = ['v2.25.0', 'v3.0.0', 'v3.4.0-ea.1', 'v3.4.0-ea.2', 'v3.4.0-ea.3']
         latest_bundles = [
@@ -595,7 +594,7 @@ class TestSupersededEA:
         ocp_versions = ['v4.19', 'v4.20']
         global_entries = [
             plain_ocp('v4.19'),
-            {'version': 'v4.20', 'onboarded-since': 'rhods-operator.2.25.0'},
+            {'version': 'v4.20', 'onboarded-range': '>=2.25.0'},
         ]
         shipped = ['v2.25.0', 'v3.0.0', 'v3.4.0-ea.1', 'v3.4.0-ea.2']
         catalogs = {
@@ -1131,11 +1130,11 @@ class TestEdgeCases:
         validator.validate()
 
     def test_bundle_exactly_at_discontinuity_boundary(self, make_validator, caplog):
-        """A bundle exactly equal to discontinued-from should be ignored (>= check)."""
+        """A bundle exactly matching discontinued-range should be ignored."""
         ocp_versions = ['v4.17']
         global_entries = [{
             'version': 'v4.17',
-            'discontinued-from': 'rhods-operator.2.19.0',
+            'discontinued-range': '>=2.19.0',
         }]
         shipped = ['v2.16.0', 'v2.19.0']
         catalogs = {'v4.17': ['rhods-operator.2.16.0']}
@@ -1150,15 +1149,15 @@ class TestEdgeCases:
         with caplog.at_level(logging.DEBUG):
             validator.validate()
 
-        assert "outside supported range" in caplog.text
+        assert "in discontinued-range" in caplog.text
         assert "Validation failed" not in caplog.text
 
     def test_bundle_exactly_at_onboarding_boundary(self, make_validator, caplog):
-        """A bundle exactly equal to onboarded-since IS within the window and must be present."""
+        """A bundle exactly matching onboarded-range IS within the window and must be present."""
         ocp_versions = ['v4.20']
         global_entries = [{
             'version': 'v4.20',
-            'onboarded-since': 'rhods-operator.2.25.0',
+            'onboarded-range': '>=2.25.0',
         }]
         shipped = ['v2.25.0']
         catalogs = {'v4.20': []}
@@ -1215,3 +1214,236 @@ class TestEdgeCases:
         )
         assert validator.shipped_rhoai_versions.count('2.16.0') == 1
         validator.validate()
+
+
+# ============================================================================
+# 17. ONBOARDED-RANGE / DISCONTINUED-RANGE SCENARIOS
+# ============================================================================
+
+class TestOnboardedRange:
+    """Tests specific to the range-based onboarding/discontinuation model.
+    These exercise the satisfies_range() integration through the validator."""
+
+    def test_gap_scenario_no_skip_bundles_needed(self, make_validator, caplog):
+        """The core v4.22 motivator: onboarded-range with a gap eliminates
+        the need for skip-bundles for intermediate releases."""
+        ocp_versions = ['v4.22']
+        global_entries = [{
+            'version': 'v4.22',
+            'onboarded-range': '>=2.25.0 <2.26.0 || >=3.5.0',
+        }]
+        shipped = ['v2.25.0', 'v3.2.1', 'v3.4.1', 'v3.5.0', 'v3.6.0']
+        catalogs = {
+            'v4.22': [
+                'rhods-operator.2.25.0',
+                'rhods-operator.3.5.0',
+                'rhods-operator.3.6.0',
+            ],
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.DEBUG):
+            validator.validate()
+
+        assert "not in onboarded-range" in caplog.text
+        assert "Validation failed" not in caplog.text
+
+    def test_gap_version_missing_is_not_flagged(self, make_validator, caplog):
+        """Versions in the gap (between clauses) should not be flagged as missing."""
+        ocp_versions = ['v4.22']
+        global_entries = [{
+            'version': 'v4.22',
+            'onboarded-range': '>=2.25.0 <2.26.0 || >=3.5.0',
+        }]
+        shipped = ['v2.25.0', 'v3.2.1', 'v3.4.0-ea.1', 'v3.4.0-ea.2', 'v3.5.0']
+        catalogs = {
+            'v4.22': ['rhods-operator.2.25.0', 'rhods-operator.3.5.0'],
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.DEBUG):
+            validator.validate()
+
+        assert "rhods-operator.3.2.1" not in [
+            line for line in caplog.text.split('\n') if 'Missing' in line
+        ]
+        assert "Validation failed" not in caplog.text
+
+    def test_multi_clause_discontinued_range(self, make_validator, caplog):
+        """Multi-clause discontinued-range with a gap in the middle."""
+        ocp_versions = ['v4.19']
+        global_entries = [{
+            'version': 'v4.19',
+            'discontinued-range': '>=2.26.0 <3.0.0 || >=3.2.0',
+        }]
+        shipped = ['v2.25.0', 'v2.26.0', 'v3.0.0', 'v3.1.0', 'v3.2.0']
+        catalogs = {
+            'v4.19': [
+                'rhods-operator.2.25.0',
+                'rhods-operator.3.0.0',
+                'rhods-operator.3.1.0',
+            ],
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.DEBUG):
+            validator.validate()
+
+        assert "in discontinued-range" in caplog.text
+        assert "Validation failed" not in caplog.text
+
+    def test_combined_onboarded_and_discontinued_ranges(self, make_validator, caplog):
+        """Both onboarded-range and discontinued-range set on the same OCP."""
+        ocp_versions = ['v4.20']
+        global_entries = [{
+            'version': 'v4.20',
+            'onboarded-range': '>=2.25.0',
+            'discontinued-range': '>=3.5.0',
+        }]
+        shipped = ['v2.16.0', 'v2.25.0', 'v3.0.0', 'v3.5.0']
+        catalogs = {
+            'v4.20': [
+                'rhods-operator.2.25.0',
+                'rhods-operator.3.0.0',
+            ],
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.DEBUG):
+            validator.validate()
+
+        assert "not in onboarded-range" in caplog.text
+        assert "in discontinued-range" in caplog.text
+        assert "Validation failed" not in caplog.text
+
+    def test_range_plus_skip_bundles(self, make_validator, caplog):
+        """skip-bundles should still work alongside onboarded-range."""
+        ocp_versions = ['v4.22']
+        global_entries = [{
+            'version': 'v4.22',
+            'onboarded-range': '>=2.25.0',
+            'skip-bundles': ['rhods-operator.2.25.1'],
+        }]
+        shipped = ['v2.25.0', 'v2.25.1', 'v3.0.0']
+        catalogs = {
+            'v4.22': ['rhods-operator.2.25.0', 'rhods-operator.3.0.0'],
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.WARNING):
+            validator.validate()
+
+        assert "skip-bundles list" in caplog.text
+        assert "Validation failed" not in caplog.text
+
+    def test_invalid_range_string_fails_at_load(self, tmp_path):
+        """A malformed range string should cause failure during __init__,
+        not during validate()."""
+        import os
+        import sys
+
+        processors_root = os.path.join(os.path.dirname(__file__), '..')
+        if processors_root not in sys.path:
+            sys.path.insert(0, os.path.abspath(processors_root))
+        from conftest import (
+            write_build_config_catalogs, write_global_config,
+            write_shipped_versions, write_catalog_yaml,
+        )
+        from validator.catalog_validator import catalog_validator
+
+        build_cfg = str(tmp_path / 'bc.yaml')
+        global_cfg = str(tmp_path / 'gc.yaml')
+        shipped = str(tmp_path / 'sv.txt')
+        cat_folder = str(tmp_path / 'cat')
+        os.makedirs(cat_folder, exist_ok=True)
+
+        write_build_config_catalogs(build_cfg, ['v4.22'])
+        write_global_config(global_cfg, [{
+            'version': 'v4.22',
+            'onboarded-range': '>=not-a-version',
+        }])
+        write_shipped_versions(shipped, ['v3.0.0'])
+
+        cat_path = os.path.join(cat_folder, 'v4.22', 'rhods-operator', 'catalog.yaml')
+        write_catalog_yaml(cat_path, ['rhods-operator.3.0.0'])
+
+        with pytest.raises(ValueError):
+            catalog_validator(
+                build_config_path=build_cfg,
+                catalog_folder_path=cat_folder,
+                shipped_rhoai_versions_path=shipped,
+                operation='validate-catalogs',
+                global_config_path=global_cfg,
+            )
+
+    def test_default_no_range_specified(self, make_validator):
+        """When neither onboarded-range nor discontinued-range is specified,
+        all versions are onboarded and none are discontinued."""
+        ocp_versions = ['v4.19']
+        global_entries = [{'version': 'v4.19'}]
+        shipped = ['v2.16.0', 'v3.0.0']
+        catalogs = {'v4.19': ['rhods-operator.2.16.0', 'rhods-operator.3.0.0']}
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        validator.validate()
+
+    def test_range_in_pcc_mode(self, make_validator, caplog):
+        """Range-based validation should work identically in PCC mode."""
+        ocp_versions = ['v4.22']
+        global_entries = [{
+            'version': 'v4.22',
+            'onboarded-range': '>=2.25.0 <2.26.0 || >=3.5.0',
+        }]
+        shipped = ['v2.25.0', 'v3.2.1', 'v3.5.0']
+        catalogs = {
+            'v4.22': ['rhods-operator.2.25.0', 'rhods-operator.3.5.0'],
+        }
+
+        validator = make_validator(
+            operation='validate-pcc',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+        with caplog.at_level(logging.DEBUG):
+            validator.validate()
+
+        assert "not in onboarded-range" in caplog.text
+        assert "Validation failed" not in caplog.text
