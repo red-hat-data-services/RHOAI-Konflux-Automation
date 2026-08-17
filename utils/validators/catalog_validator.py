@@ -170,7 +170,7 @@ class catalog_validator:
                     print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
                     continue
 
-                if not self.rhods_operator(operator_name).is_latest_ea(bundles):
+                if self.rhods_operator(operator_name)[3] == 0 and not self.rhods_operator(operator_name).is_latest_ea(bundles):
                     print(f'Ignoring missing {operator_name} since it is expected to be overwritten by a newer EA release')
                     continue
 
@@ -236,7 +236,7 @@ class catalog_validator:
                     print(f'Ignoring missing {operator_name} since OCP {ocp_version} is not supported for it')
                     continue
 
-                if not self.rhods_operator(operator_name).is_latest_ea(bundles):
+                if self.rhods_operator(operator_name)[3] == 0 and not self.rhods_operator(operator_name).is_latest_ea(bundles):
                     print(f'Ignoring missing {operator_name} since it is expected to be overwritten by a newer EA release')
                     continue
 
