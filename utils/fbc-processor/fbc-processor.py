@@ -142,6 +142,7 @@ class fbc_processor:
                 intermediate_registry = replacement['registry']
                 for old, new in replacement['repo_mappings'].items():
                     value = value.replace(f'{intermediate_registry}/{old}@', f'{self.PRODUCTION_REGISTRY}/{new}@')
+            value = DoubleQuotedScalarString(value)
         return value
 
 
