@@ -19,6 +19,11 @@ OPERATOR_NAME = 'rhods-operator'
 OPERANDS_MAP_PATH = 'build/operands-map.yaml'
 MANIFESTS_CONFIG_PATH = 'build/manifests-config.yaml'
 
+# OLM schema names
+OLM_BUNDLE_SCHEMA = 'olm.bundle'
+OLM_CHANNEL_SCHEMA = 'olm.channel'
+OLM_PACKAGE_SCHEMA = 'olm.package'
+
 # Channel constants
 RESET_CHANNELS = {'beta'}
 

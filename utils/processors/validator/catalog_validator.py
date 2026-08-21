@@ -209,7 +209,7 @@ class catalog_validator:
             LOGGER.debug(f"catalog_dict keys: {json.dumps({schema: list(names.keys()) for schema, names in catalog_dict.items()}, indent=4)}")
 
             # Extract only the bundle entries
-            bundles = catalog_dict['olm.bundle']  
+            bundles = catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]
 
             # Convert e.g. "v4.17" -> (4, 17) for version comparison
             parsed_ocp_version = version_util.OcpVersion(ocp_version)
