@@ -19,6 +19,10 @@ OPERATOR_NAME = 'rhods-operator'
 OPERANDS_MAP_PATH = 'build/operands-map.yaml'
 MANIFESTS_CONFIG_PATH = 'build/manifests-config.yaml'
 
+# FBC Processor constants
+OPERATOR_BUNDLE_IMAGE = 'quay.io/rhoai/odh-operator-bundle'
+BUNDLE_BUILD_ARGS_PATH = 'bundle/bundle_build_args.map'
+
 # OLM schema names
 OLM_BUNDLE_SCHEMA = 'olm.bundle'
 OLM_CHANNEL_SCHEMA = 'olm.channel'
@@ -26,6 +30,7 @@ OLM_PACKAGE_SCHEMA = 'olm.package'
 
 # Channel constants
 RESET_CHANNELS = {'beta'}
+
 
 # Catalog validator constants
 MISSING_BUNDLE_EXCEPTIONS = ['rhods-operator.2.9.0', 'rhods-operator.2.9.1'] # ref - RHOAIENG-8828
