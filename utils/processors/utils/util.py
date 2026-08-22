@@ -326,7 +326,7 @@ def fetch_git_metadata_for_existing_digests(image_entries: List[Dict]) -> Dict:
                 manifest_digest = arch_digests[0]
 
         labels = qc.get_git_labels(parsed['repo'], manifest_digest)
-        labels = {l['key']: l['value'] for l in labels if l['value']}
+        labels = {label['key']: label['value'] for label in labels if label['value']}
 
         git_labels_meta['map'][parsed['component_name']] = {
             CONSTANTS.GIT_URL_LABEL_KEY: labels.get(CONSTANTS.GIT_URL_LABEL_KEY, ''),
@@ -639,7 +639,8 @@ def fetch_file_data_from_github(
 def apply_registry_and_repo_replacements(
     image_entries: List[Dict],
     registry_mapping: Dict[str, str],
-    repo_mappings: Dict[str, str]
+    repo_mappings: Dict[str, str],
+    value_key: str = 'value'
 ) -> None:
     """
     Replaces build registry/repo paths with release registry/repo paths in image entries.
@@ -648,11 +649,11 @@ def apply_registry_and_repo_replacements(
     based on the provided mappings.
 
     Args:
-        image_entries: List of image entry dicts with 'name' and 'value' keys.
-                       Modified in-place.
-        registry_mapping: Dict mapping build registry to release registry
-
-        repo_mappings: Dict mapping build repo paths to release repo paths
+        image_entries: List of dicts containing image strings. Modified in-place.
+        registry_mapping: Dict mapping build registry to release registry.
+        repo_mappings: Dict mapping build repo paths to release repo paths.
+        value_key: The dict key holding the image string (default 'value').
+                   Use 'image' for OLM relatedImages entries.
 
     Example:
         image_entries = [
@@ -679,15 +680,14 @@ def apply_registry_and_repo_replacements(
             {'name': 'OPERATOR', 'value': 'registry.redhat.io/rhoai/odh-rhel9-operator@sha256:ghi'},
         ]
     """
-    LOGGER.info(f"Applying registry and repo replacements to {len(image_entries)} image(s)")
+    LOGGER.debug(f"Applying registry and repo replacements to {len(image_entries)} image(s)")
 
-    # Validate and extract the single registry mapping entry
     if len(registry_mapping) != 1:
         raise ValueError(f"registry_mapping must have exactly one entry, got {len(registry_mapping)}")
     source_registry, target_registry = next(iter(registry_mapping.items()))
 
     for image_entry in image_entries:
-        original_value = image_entry.get('value', '')
+        original_value = image_entry.get(value_key, '')
         new_value = original_value
 
         if new_value:
@@ -697,5 +697,7 @@ def apply_registry_and_repo_replacements(
                     f'{target_registry}/{target_repo}@'
                 )
 
-        image_entry['value'] = DoubleQuotedScalarString(new_value)
+        image_entry[value_key] = DoubleQuotedScalarString(new_value)
         LOGGER.debug(f"  {original_value} -> {new_value}")
+
+
