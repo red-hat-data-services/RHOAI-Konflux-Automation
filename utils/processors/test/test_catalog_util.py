@@ -8,7 +8,7 @@ Covers: build_catalog_index, extract_document_by_schema, purge_bundles,
 import os
 import sys
 import pytest
-from collections import defaultdict
+from collections import defaultdict  # used in empty catalog edge case tests
 
 processors_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if processors_root not in sys.path:
@@ -45,11 +45,8 @@ def make_package(name='rhods-operator', default_channel='stable', icon='base64da
 
 
 def build_catalog(*docs):
-    """Build a catalog_dict from a list of docs (same as build_catalog_index but inline)."""
-    catalog_dict = defaultdict(dict)
-    for doc in docs:
-        catalog_dict[doc['schema']][doc['name']] = doc
-    return catalog_dict
+    """Build a catalog_dict using the production build_catalog_index function."""
+    return catalog_util.build_catalog_index(list(docs))
 
 
 # ===========================================================================

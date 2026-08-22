@@ -165,11 +165,12 @@ def processor_factory(tmp_path):
     mod = __import__('importlib').util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def _factory(paths=None, purge_bundles='', **overrides):
+    def _factory(paths=None, purge_bundles='', bundle_git_url='https://github.com/org/repo', **overrides):
         if paths is None:
             paths = setup_processor_files(tmp_path, **overrides)
 
-        with patch.object(mod.util, 'fetch_file_data_from_github', return_value='COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'):
+        with patch.object(mod.util, 'fetch_file_data_from_github', return_value='COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'), \
+             patch.object(mod.util, 'fetch_files_from_git_repo', return_value={CONSTANTS.BUNDLE_BUILD_ARGS_PATH: 'COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'}):
             processor = mod.fbc_processor(
                 rhoai_version='rhoai-3.5-ea.1',
                 build_type='ci',
@@ -178,7 +179,7 @@ def processor_factory(tmp_path):
                 single_bundle_catalog_path=paths['single_bundle_catalog_path'],
                 input_catalog_path=paths['input_catalog_path'],
                 output_catalog_path=paths['output_catalog_path'],
-                bundle_git_url='https://github.com/org/repo',
+                bundle_git_url=bundle_git_url,
                 bundle_git_commit='abc123',
                 catalog_build_args_file_path=paths['catalog_build_args_file_path'],
                 push_pipeline_yaml_path=paths['push_pipeline_yaml_path'],
@@ -343,3 +344,17 @@ class TestPatchCatalog:
 
         bundle = processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]['rhods-operator.3.5.0-ea.1']
         assert bundle['image'] == 'some-other-registry.io/other-repo@sha256:xyz'
+
+    def test_non_github_repo_uses_git_clone(self, processor_factory):
+        """Non-GitHub bundle_git_url uses fetch_files_from_git_repo instead of raw.githubusercontent."""
+        processor, mod = processor_factory(bundle_git_url='https://gitlab.com/redhat/rhel-ai/repo')
+
+        # Verify the processor was created successfully with GitLab URL
+        assert processor.bundle_git_url == 'https://gitlab.com/redhat/rhel-ai/repo'
+
+        # generate_catalog_build_args is called during process(), mock must be active
+        with patch.object(mod.util, 'fetch_files_from_git_repo',
+                          return_value={CONSTANTS.BUNDLE_BUILD_ARGS_PATH: 'COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'}):
+            processor.catalog_build_args = processor.generate_catalog_build_args()
+
+        assert 'COMP_GIT_URL' in processor.catalog_build_args
