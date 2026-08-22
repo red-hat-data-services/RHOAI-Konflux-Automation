@@ -3,6 +3,7 @@ import sys
 import json
 import argparse
 from typing import Dict
+from urllib.parse import urlparse
 
 from logger.logger import getLogger
 import utils.util as util
@@ -150,12 +151,22 @@ class fbc_processor:
         LOGGER.debug(f"  bundle_args:\n{bundle_args}")
 
         # Part 2: remaining components git metadata from bundle_build_args.map
+        # Use raw.githubusercontent.com for GitHub repos; clone for non-GitHub (e.g. GitLab)
         LOGGER.info("  Fetching remaining git metadata from bundle_build_args.map...")
-        bundle_build_args = util.fetch_file_data_from_github(
-            git_url=self.bundle_git_url,
-            git_commit=self.bundle_git_commit,
-            file_path=CONSTANTS.BUNDLE_BUILD_ARGS_PATH
-        )
+        if urlparse(self.bundle_git_url).hostname == 'github.com':
+            bundle_build_args = util.fetch_file_data_from_github(
+                git_url=self.bundle_git_url,
+                git_commit=self.bundle_git_commit,
+                file_path=CONSTANTS.BUNDLE_BUILD_ARGS_PATH
+            )
+        else:
+            LOGGER.info("  Non-GitHub repo detected, cloning to fetch files...")
+            fetched = util.fetch_files_from_git_repo(
+                git_url=self.bundle_git_url,
+                git_commit=self.bundle_git_commit,
+                file_paths=[CONSTANTS.BUNDLE_BUILD_ARGS_PATH]
+            )
+            bundle_build_args = fetched[CONSTANTS.BUNDLE_BUILD_ARGS_PATH]
         LOGGER.debug(f"  bundle_build_args:\n{bundle_build_args}")
 
         # Combine: catalog_build_args = bundle's own metadata + bundle_build_args
