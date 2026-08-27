@@ -258,7 +258,7 @@ class snapshot_processor:
         failed_pipelines = {}
         unknown_pipelines = {}
 
-        running_statuses = ['Running', 'ResolvingTaskRef']
+        running_statuses = ['Running', 'ResolvingTaskRef', 'PipelineRunPending']
         success_statuses = ['Succeeded', 'Completed']
         failed_statuses = ['Failed', 'PipelineRunTimeout', 'PipelineValidationFailed', 'CreateRunFailed', 'CouldntGetTask', 'ReasonCouldntCreateOrUpdateAffinityAssistantStatefulSet', 'CancelledRunningFinally']
         unknown_status = ['Unknown']
