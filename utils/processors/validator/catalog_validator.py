@@ -60,6 +60,12 @@ class catalog_validator:
 
         global_ocp_versions = global_config['config']['supported-ocp-versions']
 
+        # Parse every configured OCP version to validate its format. OcpVersion
+        # raises an error for invalid values; the temporary object is not needed
+        # after validation, so it is not stored.
+        for entry in global_ocp_versions:
+            version_util.OcpVersion(entry['version'])
+
         # Maps OCP version -> semver range expression for onboarded versions
         # Versions that satisfy the range are expected to be present in the catalog.
         self.onboarded_range_map = {
@@ -96,6 +102,19 @@ class catalog_validator:
         self.catalog_entries = self._build_catalog_entries(
             build_config, operation, catalog_folder_path
         )
+
+        # Check that every OCP version configured in build-config.yaml is also
+        # defined in the global configuration YAML.
+        missing_global_config = sorted(
+            {version for version, _ in self.catalog_entries}
+            - set(self.onboarded_range_map)
+        )
+        if missing_global_config:
+            raise ValueError(
+                "OCP version(s) present in build-config.yaml but absent from "
+                "the global config YAML: "
+                + ', '.join(missing_global_config)
+            )
         LOGGER.info(f"catalog_entries: {json.dumps([(version, path) for version, path in self.catalog_entries], indent=4)}")
 
         # Deduplicate and sort all valid version strings from the shipped versions file
@@ -119,9 +138,9 @@ class catalog_validator:
         of operation mode.
 
         For validate-pcc:      config has a flat list of dicts with 'version' keys;
-                               catalog files are flat: catalog-v4.XX.yaml
+                               catalog files are flat: catalog-v<major>.<minor>.yaml
         For validate-catalogs: config has 'release' + 'build' sub-lists;
-                               catalog files are nested: v4.XX/rhods-operator/catalog.yaml
+                               catalog files are nested: v<major>.<minor>/rhods-operator/catalog.yaml
         """
         catalog_entries = []
         ocp_config = build_config['config']['supported-ocp-versions']
@@ -129,7 +148,7 @@ class catalog_validator:
         if operation == 'validate-pcc':
             ocp_versions = sorted(
                 [entry['version'] for entry in ocp_config],
-                key=lambda version: version_util.OcpVersion(version)._tuple
+                key=version_util.OcpVersion
             )
             for ocp_version in ocp_versions:
                 catalog_path = f'{catalog_folder_path}/catalog-{ocp_version}.yaml'
@@ -140,7 +159,7 @@ class catalog_validator:
             build_versions = [item['name'] for item in ocp_config.get('build', [])]
             ocp_versions = sorted(
                 list(set(release_versions + build_versions)),
-                key=lambda version: version_util.OcpVersion(version)._tuple
+                key=version_util.OcpVersion
             )
             for ocp_version in ocp_versions:
                 catalog_path = f'{catalog_folder_path}/{ocp_version}/rhods-operator/catalog.yaml'

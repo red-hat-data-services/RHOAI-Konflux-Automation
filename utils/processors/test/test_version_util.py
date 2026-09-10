@@ -57,6 +57,19 @@ class TestOcpVersion:
         ocp = OcpVersion((4, 19))
         assert ocp._tuple == (4, 19)
 
+    @pytest.mark.parametrize(
+        ('version', 'expected'),
+        [
+            ('v5.0', (5, 0)),
+            ('5.1', (5, 1)),
+            ('v5.10', (5, 10)),
+            ('v10.2', (10, 2)),
+        ],
+    )
+    def test_parse_future_ocp_versions(self, version, expected):
+        ocp = OcpVersion(version)
+        assert ocp._tuple == expected
+
     # -- Comparison ordering -------------------------------------------------
 
     def test_less_than(self):
@@ -77,9 +90,9 @@ class TestOcpVersion:
         assert OcpVersion('v4.19') >= OcpVersion('v4.19')
 
     def test_sorting(self):
-        versions = [OcpVersion('v4.21'), OcpVersion('v4.17'), OcpVersion('v4.19')]
-        sorted_versions = sorted(versions, key=lambda x: x._tuple)
-        assert [v._tuple for v in sorted_versions] == [(4, 17), (4, 19), (4, 21)]
+        versions = [OcpVersion('v5.10'), OcpVersion('v4.22'), OcpVersion('v5.0')]
+        sorted_versions = sorted(versions)
+        assert [v._tuple for v in sorted_versions] == [(4, 22), (5, 0), (5, 10)]
 
     # -- Repr ----------------------------------------------------------------
 
@@ -109,6 +122,19 @@ class TestOcpVersion:
     def test_wrong_type_list_raises(self):
         with pytest.raises(TypeError):
             OcpVersion([4, 19])
+
+    @pytest.mark.parametrize(
+        'version',
+        ['v5', 'v5.0.1', 'v5.0garbage', 'v5.01', 'v5.-1', ''],
+    )
+    def test_malformed_ocp_version_raises(self, version):
+        with pytest.raises(ValueError, match="Cannot parse OCP version"):
+            OcpVersion(version)
+
+    @pytest.mark.parametrize('version', [(5,), (5, 0, 1), (5, -1), ('5', 0), (True, 0)])
+    def test_invalid_tuple_raises(self, version):
+        with pytest.raises(ValueError, match="exactly two non-negative integers"):
+            OcpVersion(version)
 
 
 # ============================================================================

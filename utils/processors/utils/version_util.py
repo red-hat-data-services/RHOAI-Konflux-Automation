@@ -36,13 +36,21 @@ class OcpVersion:
     Accepts formats: 'v4.19', '4.19', or a tuple (4, 19).
     """
 
-    _OCP_REGEX = re.compile(r'v?(\d+)\.(\d+)')
+    _OCP_REGEX = re.compile(r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)')
 
     def __init__(self, version):
         if isinstance(version, tuple):
+            if (
+                len(version) != 2
+                or any(isinstance(part, bool) or not isinstance(part, int) for part in version)
+                or any(part < 0 for part in version)
+            ):
+                raise ValueError(
+                    "OcpVersion tuple must contain exactly two non-negative integers"
+                )
             self._tuple = version
         elif isinstance(version, str):
-            match = self._OCP_REGEX.match(version)
+            match = self._OCP_REGEX.fullmatch(version)
             if not match:
                 LOGGER.warning(f"Cannot parse OCP version: {version}")
                 raise ValueError(f"Cannot parse OCP version: {version}")
