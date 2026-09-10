@@ -1176,27 +1176,27 @@ class TestEdgeCases:
         assert exc_info.value.code == 1
         assert "rhods-operator.2.25.0" in caplog.text
 
-    def test_ocp_version_not_in_global_config(self, make_validator, caplog):
-        """OCP version in build-config but not in global config should use
-        safe defaults (no discontinuity, no onboarding cutoff) via .get()."""
+    def test_ocp_version_not_in_global_config(self, make_validator):
+        """OCP versions without an explicit global policy must fail closed."""
         ocp_versions = ['v4.22']
         global_entries = [plain_ocp('v4.19')]
         shipped = ['v3.0.0']
         catalogs = {'v4.22': []}
 
-        validator = make_validator(
-            operation='validate-catalogs',
-            ocp_versions=ocp_versions,
-            global_ocp_entries=global_entries,
-            shipped_version_tags=shipped,
-            catalogs=catalogs,
-        )
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(SystemExit) as exc_info:
-                validator.validate()
-
-        assert exc_info.value.code == 1
-        assert "rhods-operator.3.0.0" in caplog.text
+        with pytest.raises(
+            ValueError,
+            match=(
+                "present in build-config.yaml but absent from the global config YAML: "
+                "v4.22"
+            ),
+        ):
+            make_validator(
+                operation='validate-catalogs',
+                ocp_versions=ocp_versions,
+                global_ocp_entries=global_entries,
+                shipped_version_tags=shipped,
+                catalogs=catalogs,
+            )
 
     def test_deduplication_of_shipped_versions(self, make_validator):
         """Duplicate version tags in the shipped file should be deduplicated."""
@@ -1223,6 +1223,47 @@ class TestEdgeCases:
 class TestOnboardedRange:
     """Tests specific to the range-based onboarding/discontinuation model.
     These exercise the satisfies_range() integration through the validator."""
+
+    def test_rhoai_3x_is_supported_on_ocp_5(self, make_validator):
+        ocp_versions = ['v5.0']
+        global_entries = [{
+            'version': 'v5.0',
+            'onboarded-range': '>=3.6.0-ea.2',
+        }]
+        shipped = ['v3.6.0-ea.2']
+        catalogs = {'v5.0': ['rhods-operator.3.6.0-ea.2']}
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+
+        validator.validate()
+
+    def test_ocp_4_and_5_catalogs_are_sorted_and_validated(self, make_validator):
+        ocp_versions = ['v5.0', 'v4.22']
+        global_entries = [
+            {'version': 'v5.0', 'onboarded-range': '>=3.6.0-ea.2'},
+            {'version': 'v4.22', 'onboarded-range': '>=3.6.0-ea.2'},
+        ]
+        shipped = ['v3.6.0-ea.2']
+        catalogs = {
+            version: ['rhods-operator.3.6.0-ea.2'] for version in ocp_versions
+        }
+
+        validator = make_validator(
+            operation='validate-catalogs',
+            ocp_versions=ocp_versions,
+            global_ocp_entries=global_entries,
+            shipped_version_tags=shipped,
+            catalogs=catalogs,
+        )
+
+        assert [version for version, _ in validator.catalog_entries] == ['v4.22', 'v5.0']
+        validator.validate()
 
     def test_gap_scenario_no_skip_bundles_needed(self, make_validator, caplog):
         """The core v4.22 motivator: onboarded-range with a gap eliminates
