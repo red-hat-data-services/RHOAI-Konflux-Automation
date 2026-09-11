@@ -7,7 +7,8 @@ import re
 
 class catalog_validator:
     MISSING_BUNDLE_EXCEPTIONS = ['rhods-operator.2.9.0', 'rhods-operator.2.9.1'] #ref - RHOAIENG-8828
-    MIN_OCP_VERSION_FOR_RHOAI_30 = 419
+    MIN_OCP_VERSION_FOR_RHOAI_30 = (4, 19)
+    OCP_VERSION_REGEX = re.compile(r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)')
     # Matches both raw image tags (e.g. "v3.4.0-ea.1") and operator bundle names
     # (e.g. "rhods-operator.3.4.0-ea.1"). The $ anchor rejects build-number tags
     # (v2.16.0-1733155920) and source tags (v2.16.0-source) since they have
@@ -131,6 +132,14 @@ class catalog_validator:
             catalog_dict[obj['schema']][obj['name']] = obj
         return catalog_dict
 
+    def parse_ocp_version(self, ocp_version):
+        match = self.OCP_VERSION_REGEX.fullmatch(ocp_version)
+        if not match:
+            raise ValueError(
+                f"Cannot parse OCP version '{ocp_version}'. Expected v<major>.<minor> or <major>.<minor>."
+            )
+        return int(match.group(1)), int(match.group(2))
+
     def validate_catalogs(self):
         missing_bundles = {}
         incorrect_3x_bundles = {}
@@ -138,7 +147,7 @@ class catalog_validator:
         for ocp_version in self.supported_ocp_versions:
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{ocp_version}/rhods-operator/catalog.yaml')
             bundles = catalog_dict['olm.bundle']
-            numeric_ocp_version = int(ocp_version.replace('v4.', '4'))
+            numeric_ocp_version = self.parse_ocp_version(ocp_version)
             missing_bundles[ocp_version] = []
             incorrect_3x_bundles[ocp_version] = []
 
@@ -206,7 +215,7 @@ class catalog_validator:
 
         for pcc_file in pcc_catalog_files:
             ocp_version = re.search('^catalog-(.*).yaml', pcc_file).group(1)
-            numeric_ocp_version = int(ocp_version.replace('v4.', '4'))
+            numeric_ocp_version = self.parse_ocp_version(ocp_version)
 
             catalog_dict = self.parse_catalog_yaml(f'{self.catalog_folder_path}/{pcc_file}')
             bundles = catalog_dict['olm.bundle']
