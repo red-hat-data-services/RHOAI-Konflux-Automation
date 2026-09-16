@@ -125,10 +125,11 @@ class operator_processor:
                 print(f'ERROR:     list_digest={info.get("list_digest", "<unknown>")}')
                 print(f'ERROR:     labels_digest={info.get("labels_digest", "<unknown>")}')
                 print(f'ERROR:     quay_labels_count={info.get("quay_labels_count", "<unknown>")}')
+                print(f'ERROR:     labels_source={info.get("labels_source", "<unknown>")}')
                 print(f'ERROR:     git.url={info.get("git.url", "")!r} git.commit={info.get("git.commit", "")!r}')
                 if info.get('labels_url'):
                     print(f'ERROR:     labels_url={info["labels_url"]}')
-            print('ERROR: Quay /labels can be empty even when the image config has git.url/git.commit.')
+            print('ERROR: Quay /labels was empty and image-config fallback also failed to provide git.url/git.commit.')
             print('ERROR: operator-processor cannot write manifests-config.yaml without these labels.')
             sys.exit(1)
     def sync_yamls_from_bundle_patch(self):
@@ -209,12 +210,26 @@ class operator_processor:
                     labels = {label['key']:label['value'] for label in labels_raw if label['value']}
                     git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
                     git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
+                    labels_source = 'quay'
+                    if not (git_url and git_commit):
+                        config_labels = qc.get_config_labels(repo, manifest_digest)
+                        config_git_url = config_labels.get(self.GIT_URL_LABEL_KEY, '') if config_labels else ''
+                        config_git_commit = config_labels.get(self.GIT_COMMIT_LABEL_KEY, '') if config_labels else ''
+                        if config_git_url and config_git_commit:
+                            git_url = config_git_url
+                            git_commit = config_git_commit
+                            labels_source = 'config'
+                        else:
+                            labels_source = 'quay|/config'
                     git_labels_meta['map'][component_name] = {}
                     git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
                     git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
                     required = component_name in self.manifest_config_dict.get('map', {})
                     if git_url and git_commit:
-                        status = 'OK'
+                        if labels_source == 'config':
+                            status = 'OK (from image config; Quay /labels empty)'
+                        else:
+                            status = 'OK'
                     elif required:
                         status = 'MISSING'
                     else:
@@ -229,6 +244,7 @@ class operator_processor:
                         'labels_digest': manifest_digest,
                         'quay_labels_count': len(labels_raw),
                         'labels_url': labels_url,
+                        'labels_source': labels_source,
                         self.GIT_URL_LABEL_KEY: git_url,
                         self.GIT_COMMIT_LABEL_KEY: git_commit,
                     }
@@ -325,6 +341,52 @@ class quay_controller:
             return payload['labels']
         print(f'ERROR: Quay labels lookup failed for {url}: {payload}')
         sys.exit(1)
+
+    def _registry_headers(self, accept):
+        token = os.environ.get(self.org.upper() + '_QUAY_API_TOKEN', '')
+        headers = {'Accept': accept}
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+        return headers
+
+    def get_config_labels(self, repo, manifest_digest):
+        # Registry v2 image-config Labels. Used when Quay /labels is empty.
+        # Caller must pass the arch child digest for manifest lists, not the list digest.
+        accept = ('application/vnd.docker.distribution.manifest.v2+json, '
+                  'application/vnd.oci.image.manifest.v1+json')
+        manifest_url = f'https://quay.io/v2/{self.org}/{repo}/manifests/{manifest_digest}'
+        response = requests.get(manifest_url, headers=self._registry_headers(accept))
+        if response.status_code != 200:
+            print(f'ERROR: registry manifest lookup failed for {self.org}/{repo}@{manifest_digest}: '
+                  f'status={response.status_code}')
+            return {}
+        try:
+            manifest = response.json()
+        except ValueError:
+            print(f'ERROR: registry manifest for {self.org}/{repo}@{manifest_digest} was not JSON')
+            return {}
+        config_digest = (manifest.get('config') or {}).get('digest')
+        if not config_digest:
+            print(f'ERROR: registry manifest for {self.org}/{repo}@{manifest_digest} has no config.digest')
+            return {}
+        blob_url = f'https://quay.io/v2/{self.org}/{repo}/blobs/{config_digest}'
+        blob_response = requests.get(blob_url, headers=self._registry_headers('application/json'))
+        if blob_response.status_code != 200:
+            print(f'ERROR: registry config blob lookup failed for {self.org}/{repo}@{config_digest}: '
+                  f'status={blob_response.status_code}')
+            return {}
+        try:
+            config_json = blob_response.json()
+        except ValueError:
+            print(f'ERROR: registry config blob for {self.org}/{repo}@{config_digest} was not JSON')
+            return {}
+        labels = (config_json.get('config') or {}).get('Labels') or {}
+        if not isinstance(labels, dict):
+            labels = {}
+        return {
+            'git.url': labels.get('git.url') or '',
+            'git.commit': labels.get('git.commit') or '',
+        }
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
