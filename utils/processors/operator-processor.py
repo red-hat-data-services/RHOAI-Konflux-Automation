@@ -187,7 +187,9 @@ class operator_processor:
                 LOGGER.error("Verify that these images exist in the registry with the expected tag.")
             if other:
                 LOGGER.error(f"No git metadata found for {len(other)} component(s): {other}")
-                LOGGER.error("Check that component names in manifests-config.yaml match the image names in bundle-patch.yaml.")
+                LOGGER.error("Resolve the issue using one of the following options:")
+                LOGGER.error("  - Check that component names in manifests-config.yaml match the image names in bundle-patch.yaml.")
+                LOGGER.error("  - If a component has been offboarded and is no longer required, remove its entry from manifests-config.yaml.")
             sys.exit(1)
 
         if missing_git_labels:
