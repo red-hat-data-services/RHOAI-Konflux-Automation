@@ -37,6 +37,8 @@ class operator_processor:
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
         self.push_pipeline_dict = ruyaml.load(open(self.push_pipeline_yaml_path), Loader=ruyaml.RoundTripLoader, preserve_quotes=True) if self.push_pipeline_yaml_path else {}
+        # Per-component Quay lookup details for error reporting. Not written to YAML.
+        self.label_lookups = {}
 
     def parse_patch_yaml(self):
         return yaml.safe_load(open(self.patch_yaml_path))
@@ -92,28 +94,42 @@ class operator_processor:
         missing_git_labels = []
         for component, manifest_config in self.manifest_config_dict['map'].items():
             if 'ref_type' not in manifest_config or ('ref_type' in manifest_config and manifest_config['ref_type'] != 'branch'):
-                git_url = self.git_labels_meta['map'][component][self.GIT_URL_LABEL_KEY]
-                git_commit = self.git_labels_meta['map'][component][self.GIT_COMMIT_LABEL_KEY]
+                git_meta = self.git_labels_meta.get('map', {}).get(component)
+                if not git_meta:
+                    missing_git_labels.append(component)
+                    continue
+                git_url = git_meta.get(self.GIT_URL_LABEL_KEY, '')
+                git_commit = git_meta.get(self.GIT_COMMIT_LABEL_KEY, '')
                 if git_url and git_commit:
                     manifest_config[self.GIT_URL_LABEL_KEY] = git_url
                     manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
-                # if git_url:
-                #     manifest_config[self.GIT_URL_LABEL_KEY] = git_url # temporary making git.url optional
-                # if git_commit:
-                #     # manifest_config[self.GIT_COMMIT_LABEL_KEY] = git_commit
-                #     manifest_config['git.commit'] = git_commit # temporary change
                 else:
                     missing_git_labels.append(component)
         self.manifest_config_dict['additional_meta'] = {}
+        optional_empty = []
         for component, git_meta in self.git_labels_meta['map'].items():
             if component not in self.manifest_config_dict['map']:
                 self.manifest_config_dict['additional_meta'][component] = git_meta
-                # if component in self.manifest_config_dict['additional_meta']:
-                #     self.manifest_config_dict['additional_meta'][component]['git.commit'] = git_meta['vcs-ref'] if 'vcs-ref' in git_meta else git_meta['git.commit'] if 'git.commit' in git_meta else ''
-                # else:
-                #     self.manifest_config_dict['additional_meta'][component] = git_meta
+                if not (git_meta.get(self.GIT_URL_LABEL_KEY) and git_meta.get(self.GIT_COMMIT_LABEL_KEY)):
+                    optional_empty.append(component)
+        if optional_empty:
+            print(f'NOTE: git.url/git.commit empty for {len(optional_empty)} components not in manifests-config (non-fatal): {optional_empty}')
         if missing_git_labels:
-            print('git.url and git.commit labels missing/empty for : ', missing_git_labels)
+            print('ERROR: git.url and git.commit labels missing/empty for required manifests-config components: '
+                  f'{missing_git_labels}')
+            for component in missing_git_labels:
+                info = self.label_lookups.get(component, {})
+                print(f'ERROR:   component={component}')
+                print(f'ERROR:     image={info.get("image", "<unknown>")}')
+                print(f'ERROR:     tag={info.get("tag", self.rhoai_version)}')
+                print(f'ERROR:     list_digest={info.get("list_digest", "<unknown>")}')
+                print(f'ERROR:     labels_digest={info.get("labels_digest", "<unknown>")}')
+                print(f'ERROR:     quay_labels_count={info.get("quay_labels_count", "<unknown>")}')
+                print(f'ERROR:     git.url={info.get("git.url", "")!r} git.commit={info.get("git.commit", "")!r}')
+                if info.get('labels_url'):
+                    print(f'ERROR:     labels_url={info["labels_url"]}')
+            print('ERROR: Quay /labels can be empty even when the image config has git.url/git.commit.')
+            print('ERROR: operator-processor cannot write manifests-config.yaml without these labels.')
             sys.exit(1)
     def sync_yamls_from_bundle_patch(self):
         # operands map sync
@@ -151,6 +167,7 @@ class operator_processor:
         latest_images = []
         git_labels_meta = {'map': {}}
         missing_images = []
+        print(f'Resolving operand images using Quay tag {self.rhoai_version!r}')
         for image_entry in [image for image in self.operands_map_dict['relatedImages']  if 'FBC' not in image['name'] and 'BUNDLE' not in image['name'] and 'ODH_OPERATOR' not in image['name'] ]:
             print(f'Processing image entry - {image_entry}')
             parts = image_entry['value'].split('@')[0].split('/')
@@ -158,13 +175,17 @@ class operator_processor:
             org = parts[1]
             qc = quay_controller(org)
             repo = '/'.join(parts[2:])
+            image_ref = f'{registry}/{org}/{repo}'
             tags = qc.get_all_tags(repo, self.rhoai_version)
             # component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
             component_name = image_entry['component'] # odh mode
             if not tags:
-                print(f'no tags found for {repo}')
+                print(f'ERROR: no tags found for {image_ref}:{self.rhoai_version}')
                 missing_images.append(repo)
-            for tag in tags:
+                continue
+            print(f'Found {len(tags)} Quay tag history entries for {image_ref}:{self.rhoai_version}')
+            selected = False
+            for idx, tag in enumerate(tags):
                 sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
                 signature = qc.get_tag_details(repo, sig_tag)
                 if signature:
@@ -173,27 +194,52 @@ class operator_processor:
                     image_entry['value'] = DoubleQuotedScalarString(value)
                     latest_images.append(image_entry)
 
-                    manifest_digest = tag["manifest_digest"]
-                    print(f'manifest_digest = {manifest_digest}')
+                    list_digest = tag["manifest_digest"]
+                    manifest_digest = list_digest
+                    print(f'Selected signed digest {list_digest} for {component_name} '
+                          f'(history entry {idx + 1} of {len(tags)}, is_manifest_list={tag["is_manifest_list"]})')
                     if tag['is_manifest_list'] == True:
-                        print('Found to be a multi-arch image..')
                         image_manifest_digests = qc.get_image_manifest_digests_for_all_the_supported_archs(repo, manifest_digest)
                         if image_manifest_digests:
                             manifest_digest = image_manifest_digests[0]
-                            print(f'will be using the image with manifest_digest {manifest_digest} to find the tags and lables')
+                            print(f'Using first arch child {manifest_digest} to query Quay labels for {component_name}')
 
-
-                    labels = qc.get_git_labels(repo, manifest_digest)
-                    labels = {label['key']:label['value'] for label in labels if label['value']}
+                    labels_url = f'{BASE_URL}/repository/{org}/{repo}/manifest/{manifest_digest}/labels'
+                    labels_raw = qc.get_git_labels(repo, manifest_digest)
+                    labels = {label['key']:label['value'] for label in labels_raw if label['value']}
                     git_url = labels[self.GIT_URL_LABEL_KEY] if self.GIT_URL_LABEL_KEY in labels else ''
                     git_commit = labels[self.GIT_COMMIT_LABEL_KEY] if self.GIT_COMMIT_LABEL_KEY in labels else ''
                     git_labels_meta['map'][component_name] = {}
                     git_labels_meta['map'][component_name][self.GIT_URL_LABEL_KEY] = git_url
                     git_labels_meta['map'][component_name][self.GIT_COMMIT_LABEL_KEY] = git_commit
-
+                    required = component_name in self.manifest_config_dict.get('map', {})
+                    if git_url and git_commit:
+                        status = 'OK'
+                    elif required:
+                        status = 'MISSING'
+                    else:
+                        status = 'MISSING (non-fatal, not in manifests-config)'
+                    print(f'Labels {status} for {component_name}: git.url={git_url!r} git.commit={git_commit!r} '
+                          f'(tag={self.rhoai_version}, list_digest={list_digest}, labels_digest={manifest_digest}, '
+                          f'quay_labels={len(labels_raw)}, url={labels_url})')
+                    self.label_lookups[component_name] = {
+                        'image': f'{image_ref}:{self.rhoai_version}',
+                        'tag': self.rhoai_version,
+                        'list_digest': list_digest,
+                        'labels_digest': manifest_digest,
+                        'quay_labels_count': len(labels_raw),
+                        'labels_url': labels_url,
+                        self.GIT_URL_LABEL_KEY: git_url,
+                        self.GIT_COMMIT_LABEL_KEY: git_commit,
+                    }
+                    selected = True
                     break
+            if not selected:
+                # Same as before: do not fail the whole run here. A required
+                # manifests-config entry will still fail later in update_manifest_config.
+                print(f'ERROR: no cosign signature found for any {image_ref}:{self.rhoai_version} tag history entry; skipping')
         if missing_images:
-            print('Images missing for following components : ', missing_images)
+            print('ERROR: Images missing for following components : ', missing_images)
             sys.exit(1)
         print('latest_images', json.dumps(latest_images, indent=4))
         print()
@@ -230,12 +276,11 @@ class quay_controller:
         headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
-        if 'tags' in response.json():
-            tag = response.json()['tags']
-            return tag
-        else:
-            print(response.json())
-            sys.exit(1)
+        payload = response.json()
+        if 'tags' in payload:
+            return payload['tags']
+        print(f'ERROR: Quay tag lookup failed for {self.org}/{repo}:{tag}: {payload}')
+        sys.exit(1)
 
     def get_supported_archs(self, repo, manifest_digest):
         manifest_json = self.get_manifest_details(repo, manifest_digest)
@@ -262,11 +307,11 @@ class quay_controller:
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
 
-        if 'manifest_data' in response.json():
-            return response.json()
-        else:
-            print(response.json())
-            sys.exit(1)
+        payload = response.json()
+        if 'manifest_data' in payload:
+            return payload
+        print(f'ERROR: Quay manifest lookup failed for {self.org}/{repo}@{manifest_digest}: {payload}')
+        sys.exit(1)
 
 
     def get_git_labels(self, repo, tag):
@@ -275,12 +320,11 @@ class quay_controller:
         headers = {'Authorization': f'Bearer {os.environ[self.org.upper() + "_QUAY_API_TOKEN"]}',
                    'Accept': 'application/json'}
         response = requests.get(url, headers=headers)
-        if 'labels' in response.json():
-            labels = response.json()['labels']
-            return labels
-        else:
-            print(response.json())
-            sys.exit(1)
+        payload = response.json()
+        if 'labels' in payload:
+            return payload['labels']
+        print(f'ERROR: Quay labels lookup failed for {url}: {payload}')
+        sys.exit(1)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
