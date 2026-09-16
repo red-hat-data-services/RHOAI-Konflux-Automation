@@ -205,9 +205,10 @@ def fetch_latest_images_and_git_metadata(
     missing_signatures = []
     missing_git_labels = []
 
-    for image_entry in image_entries:
+    total_images = len(image_entries)
+    for image_number, image_entry in enumerate(image_entries, start=1):
         image_value = image_entry['value']
-        LOGGER.info(f'  Processing: {image_value.split("@")[0]}')
+        LOGGER.info(f'  [{image_number}/{total_images}] Processing: {image_value.split("@")[0]}')
         LOGGER.debug(f'Full image entry: {json.dumps(image_entry)}')
 
         # Parse image value
