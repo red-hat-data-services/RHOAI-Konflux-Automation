@@ -258,10 +258,12 @@ class snapshot_processor:
         failed_pipelines = {}
         unknown_pipelines = {}
 
-        running_statuses = ['Running', 'ResolvingTaskRef']
+        # 'Pending' = waiting in the Konflux build queue; 'Unknown' = PipelineRun not
+        # readable yet (creation race) or a transient condition. Both must be waited
+        # on, not classified as failures.
+        running_statuses = ['Running', 'ResolvingTaskRef', 'Pending', 'Unknown']
         success_statuses = ['Succeeded', 'Completed']
         failed_statuses = ['Failed', 'PipelineRunTimeout', 'PipelineValidationFailed', 'CreateRunFailed', 'CouldntGetTask', 'ReasonCouldntCreateOrUpdateAffinityAssistantStatefulSet', 'CancelledRunningFinally']
-        unknown_status = ['Unknown']
 
         with oc.project(project), oc.timeout(180 * 60):
 
