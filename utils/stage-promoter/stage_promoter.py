@@ -258,10 +258,12 @@ class snapshot_processor:
         failed_pipelines = {}
         unknown_pipelines = {}
 
-        # 'Pending' = waiting in the Konflux build queue; 'Unknown' = PipelineRun not
-        # readable yet (creation race) or a transient condition. Both must be waited
-        # on, not classified as failures.
-        running_statuses = ['Running', 'ResolvingTaskRef', 'Pending', 'Unknown']
+        # Queued/transient states that must be waited on, not classified as
+        # failures: 'PipelineRunPending' = waiting in the Konflux build queue (the
+        # reason string Tekton on this cluster reports; the workflow's bash
+        # monitor loops wait on the same string), 'Pending' = same on other
+        # Tekton versions, 'Unknown' = PipelineRun not readable yet (creation race).
+        running_statuses = ['Running', 'ResolvingTaskRef', 'Pending', 'PipelineRunPending', 'Unknown']
         success_statuses = ['Succeeded', 'Completed']
         failed_statuses = ['Failed', 'PipelineRunTimeout', 'PipelineValidationFailed', 'CreateRunFailed', 'CouldntGetTask', 'ReasonCouldntCreateOrUpdateAffinityAssistantStatefulSet', 'CancelledRunningFinally']
 
