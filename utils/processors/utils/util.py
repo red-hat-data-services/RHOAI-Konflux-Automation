@@ -776,3 +776,96 @@ def apply_registry_and_repo_replacements(
 
         image_entry['value'] = DoubleQuotedScalarString(new_value)
         LOGGER.debug(f"  {original_value} -> {new_value}")
+
+
+def fetch_images_and_git_metadata_from_snapshot(
+    image_entries: List[Dict],
+    snapshot: Dict,
+    exclude_filter: Optional[List[str]] = None
+) -> Tuple[List[Dict], Dict, List[Dict]]:
+    """
+    Early-gate resolver: pin operand image digests and git metadata from the group
+    snapshot produced by the early-gate generate-snapshot task, instead of querying
+    Quay.io for the release tag.
+
+    The snapshot is the authoritative record of which image (PR build or rhoai-X.Y
+    fallback) the gate chose for each component. Matching is by image repository
+    basename (e.g. 'odh-dashboard-rhel9') - the same key the bundle injection
+    (update-group-snapshot) uses - so a component is pinned from the snapshot only
+    when the snapshot's image is in the component's own repository. Anything the
+    snapshot does not cover (the operator/FBC/BUNDLE entries, components absent from
+    the snapshot, or an image parked in a shared repo whose basename does not match)
+    is returned as unresolved so the caller can fall back to the normal Quay lookup.
+
+    Unlike the Quay lookup, this does NOT require a cosign signature and performs no
+    registry calls: the snapshot already carries the resolved digest and git labels.
+
+    Args:
+        image_entries: operands-map relatedImages, list of {'name', 'value'} dicts.
+        snapshot: parsed snapshot.json, {component: {'image','git.url','git.commit',...}}.
+        exclude_filter: entry-name substrings always sent to the fallback (e.g.
+                        ['FBC', 'BUNDLE', 'ODH_OPERATOR']).
+
+    Returns:
+        (resolved_images, git_labels_meta, unresolved_entries)
+        - resolved_images: entries with the snapshot digest, shape matching
+          fetch_latest_images_and_git_metadata.
+        - git_labels_meta: {'map': {component_name: {git.url, git.commit}}, 'errors': {}}.
+        - unresolved_entries: entries with no snapshot match, for the caller to resolve.
+    """
+    exclude_filter = exclude_filter or []
+
+    # Index the snapshot by image repository basename, e.g. 'odh-dashboard-rhel9'.
+    snapshot_by_repo: Dict[str, Dict] = {}
+    for component, meta in (snapshot or {}).items():
+        image = (meta or {}).get('image', '') or ''
+        if '@' not in image:
+            continue
+        base, digest = image.split('@', 1)
+        repo_basename = base.rsplit('/', 1)[-1]
+        snapshot_by_repo[repo_basename] = {
+            'digest': digest,
+            CONSTANTS.GIT_URL_LABEL_KEY: meta.get(CONSTANTS.GIT_URL_LABEL_KEY, ''),
+            CONSTANTS.GIT_COMMIT_LABEL_KEY: meta.get(CONSTANTS.GIT_COMMIT_LABEL_KEY, ''),
+        }
+    LOGGER.info(f"Snapshot carries {len(snapshot_by_repo)} component image(s) indexed by repo basename")
+
+    resolved_images: List[Dict] = []
+    git_labels_meta: Dict = {'map': {}, 'errors': {}}
+    unresolved_entries: List[Dict] = []
+
+    for image_entry in image_entries:
+        name = image_entry.get('name', '')
+
+        # Operator/FBC/BUNDLE are pinned elsewhere (Block 1 build / bundle stage),
+        # never from the snapshot - route them to the fallback unchanged.
+        if any(pattern in name for pattern in exclude_filter):
+            unresolved_entries.append(image_entry)
+            continue
+
+        parsed = parse_image_value(image_entry['value'])
+        repo_basename = parsed['repo'].rsplit('/', 1)[-1]
+        component_name = parsed['component_name']
+
+        snap = snapshot_by_repo.get(repo_basename)
+        if not snap:
+            LOGGER.debug(f"  No snapshot match for '{name}' (repo '{repo_basename}'); deferring to fallback")
+            unresolved_entries.append(image_entry)
+            continue
+
+        value = f"{parsed['registry']}/{parsed['org']}/{parsed['repo']}@{snap['digest']}"
+        updated_entry = dict(image_entry)
+        updated_entry['value'] = DoubleQuotedScalarString(value)
+        resolved_images.append(updated_entry)
+
+        git_labels_meta['map'][component_name] = {
+            CONSTANTS.GIT_URL_LABEL_KEY: snap[CONSTANTS.GIT_URL_LABEL_KEY],
+            CONSTANTS.GIT_COMMIT_LABEL_KEY: snap[CONSTANTS.GIT_COMMIT_LABEL_KEY],
+        }
+        LOGGER.info(f"  Pinned '{name}' from snapshot -> {value}")
+
+    LOGGER.info(
+        f"Snapshot resolution: {len(resolved_images)} pinned from snapshot, "
+        f"{len(unresolved_entries)} deferred to the Quay fallback"
+    )
+    return resolved_images, git_labels_meta, unresolved_entries

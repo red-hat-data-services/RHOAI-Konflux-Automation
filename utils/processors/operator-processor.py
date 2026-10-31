@@ -11,7 +11,7 @@ LOGGER = getLogger('processor')
 
 class operator_processor:
 
-    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, use_existing_digests:bool=False):
+    def __init__(self, patch_yaml_path:str, rhoai_version:str, operands_map_path:str, nudging_yaml_path:str, manifest_config_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, use_existing_digests:bool=False, snapshot_path:str=None):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Operator Processor")
         LOGGER.info("=============================================================================")
@@ -23,6 +23,7 @@ class operator_processor:
         self.push_pipeline_operation = push_pipeline_operation
         self.push_pipeline_yaml_path = push_pipeline_yaml_path
         self.use_existing_digests = use_existing_digests
+        self.snapshot_path = snapshot_path
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"push_pipeline_operation: {self.push_pipeline_operation}")
         LOGGER.info(f"patch_yaml_path: {self.patch_yaml_path}")
@@ -54,7 +55,36 @@ class operator_processor:
         LOGGER.info("=============================================================================")
         self.sync_yamls_from_bundle_patch()
 
-        if self.use_existing_digests:
+        if self.snapshot_path:
+            LOGGER.info("")
+            LOGGER.info("=============================================================================")
+            LOGGER.info(f"early-gate: pinning operand digests from the group snapshot ({self.snapshot_path})...")
+            LOGGER.info("=============================================================================")
+            # The snapshot is generate-snapshot's JSON, not YAML; read it as JSON.
+            snapshot = json.loads(util.read_file(self.snapshot_path))
+            # Operator/FBC/BUNDLE are pinned by Block 1 / the bundle stage, never here.
+            resolved_images, git_labels_meta, unresolved = util.fetch_images_and_git_metadata_from_snapshot(
+                self.operands_map_dict['relatedImages'],
+                snapshot,
+                exclude_filter=['FBC', 'BUNDLE', 'ODH_OPERATOR'],
+            )
+            # Anything the snapshot does not cover (operator/FBC/BUNDLE, components
+            # absent from the snapshot, or an image parked in a shared repo) falls
+            # back to the normal Quay lookup against the release tag.
+            if unresolved:
+                LOGGER.info("")
+                LOGGER.info("=============================================================================")
+                LOGGER.info(f"early-gate: {len(unresolved)} entry(ies) not in the snapshot; querying Quay for those...")
+                LOGGER.info("=============================================================================")
+                fallback_images, fallback_meta = util.fetch_latest_images_and_git_metadata(
+                    unresolved, self.rhoai_version
+                )
+                resolved_images.extend(fallback_images)
+                git_labels_meta['map'].update(fallback_meta.get('map', {}))
+                git_labels_meta.setdefault('errors', {}).update(fallback_meta.get('errors', {}))
+            self.latest_images = resolved_images
+            self.git_labels_meta = git_labels_meta
+        elif self.use_existing_digests:
             LOGGER.info("")
             LOGGER.info("=============================================================================")
             LOGGER.info("--use-existing-digests: Skipping Quay tag lookup, fetching git metadata only...")
@@ -302,10 +332,16 @@ if __name__ == '__main__':
     parser.add_argument('--use-existing-digests', action='store_true', default=False,
                         help='Preserve existing image refs and digests instead of querying Quay for latest tags. Used for embargo nudging.',
                         dest='use_existing_digests')
+    parser.add_argument('--snapshot-path', required=False, default=None,
+                        help='Early-gate only: path to the group snapshot.json from generate-snapshot. '
+                             'When set, operand digests and git metadata are pinned from the snapshot '
+                             '(PR builds where available, rhoai-X.Y otherwise); components absent from the '
+                             'snapshot fall back to the Quay release-tag lookup.',
+                        dest='snapshot_path')
     args = parser.parse_args()
 
     if args.operation.lower() == 'process-operator-yamls':
-        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, use_existing_digests=args.use_existing_digests)
+        processor = operator_processor(patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, operands_map_path=args.operands_map_path, nudging_yaml_path=args.nudging_yaml_path, manifest_config_path=args.manifest_config_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, use_existing_digests=args.use_existing_digests, snapshot_path=args.snapshot_path)
         processor.process()
 
     # patch_yaml_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/bundle/bundle-patch.yaml'
