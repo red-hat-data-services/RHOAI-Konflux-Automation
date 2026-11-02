@@ -259,7 +259,8 @@ class bundle_processor:
                     sig_tag = f'{tag["manifest_digest"].replace(":", "-")}.sig'
                     signature = qc.get_tag_details(repo, sig_tag)
                     if signature:
-                        latest_images.append({'name': f'RELATED_IMAGE_{repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
+                        component_name = re.sub(r'-rhel\d+', '', repo).replace('-', '_').upper()
+                        latest_images.append({'name': f'RELATED_IMAGE_{component_name}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
                         break
         print('latest_images', json.dumps(latest_images, indent=4))
         return latest_images
@@ -278,7 +279,7 @@ class bundle_processor:
             version_tag = f'{self.quay_tag}-nightly' if self.build_type.lower() == 'nightly' else self.quay_tag
             # version_tag = 'main' # workaround
             tags = qc.get_all_tags(repo, version_tag)
-            component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
+            component_name = re.sub(r'-rhel\d+$', '', repo)
             if not tags:
                 print(f'no tags found for {repo}')
                 missing_images.append(repo)
