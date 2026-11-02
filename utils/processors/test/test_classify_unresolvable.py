@@ -2,15 +2,33 @@ import os
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from utils.util import classify_unresolvable_image
+from utils.util import classify_unresolvable_image, parse_image_value
 
 GOOD = 'sha256:' + 'a' * 64
 OTHER = 'sha256:' + 'b' * 64
 
 
 def _parsed(digest, repo='odh-vllm-cpu-rhel9', org='rhoai'):
-    return {'org': org, 'repo': repo, 'component_name': repo.replace('-rhel9', ''), 'digest': digest}
+    return parse_image_value(f'quay.io/{org}/{repo}@{digest}')
+
+
+@pytest.mark.parametrize(
+    ('repo', 'expected_component'),
+    [
+        ('odh-vllm-cpu-rhel8', 'odh-vllm-cpu'),
+        ('odh-vllm-cpu-rhel9', 'odh-vllm-cpu'),
+        ('odh-vllm-cpu-rhel10', 'odh-vllm-cpu'),
+        ('odh-vllm-cpu-rhel11', 'odh-vllm-cpu'),
+        ('odh-vllm-cpu', 'odh-vllm-cpu'),
+        ('odh-rhel9-vllm-cpu', 'odh-rhel9-vllm-cpu'),
+    ],
+)
+def test_parse_image_value_component_name(repo, expected_component):
+    parsed = parse_image_value(f'quay.io/rhoai/{repo}@{GOOD}')
+    assert parsed['component_name'] == expected_component
 
 
 class TestMalformedDigest:
