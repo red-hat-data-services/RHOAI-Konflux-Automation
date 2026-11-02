@@ -1,3 +1,4 @@
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -178,7 +179,7 @@ class operator_processor:
             repo = '/'.join(parts[2:])
             image_ref = f'{registry}/{org}/{repo}'
             tags = qc.get_all_tags(repo, self.rhoai_version)
-            # component_name = repo.replace('-rhel8', '').replace('-rhel9', '') if repo.endswith(('-rhel8', '-rhel9')) else repo
+            # component_name = re.sub(r'-rhel\d+$', '', repo)
             component_name = image_entry['component'] # odh mode
             if not tags:
                 print(f'ERROR: no tags found for {image_ref}:{self.rhoai_version}')
