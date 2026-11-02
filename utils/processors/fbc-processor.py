@@ -182,14 +182,14 @@ class fbc_processor:
 
         Steps:
           1. Extract the olm.bundle document from the single-bundle catalog (SBC)
-          2. If the bundle already exists in the catalog, return early (idempotent)
+          2. If the bundle already exists, skip catalog patching (idempotent)
           3. Apply image registry/repo replacements (quay.io -> registry.redhat.io)
           4. Add the bundle to the catalog
           5. Merge/reset olm.package and olm.channels from catalog-patch.yaml
           6. Remove orphan bundles (bundles not referenced by any channel)
           7. Purge explicitly named bundles (optional, via --purge-bundles)
 
-        Steps 3-7 are skipped if the bundle already exists (step 2).
+        Steps 3-6 are skipped if the bundle already exists; explicit purges still run.
 
         Modifies self.catalog_dict in-place.
         """
@@ -206,9 +206,10 @@ class fbc_processor:
         bundle_name = olm_bundle['name']
         LOGGER.info(f"  Bundle from SBC: {bundle_name}")
 
-        # Step 2: Check if this bundle already exists. If it does, skip remaining steps.
+        # Step 2: Skip catalog patching if this bundle already exists.
         if bundle_name in self.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]:
             LOGGER.warning(f"  Bundle {bundle_name} already exists in catalog — SKIPPING PATCH.")
+            self._purge_requested_bundles()
             return
 
         # Step 3: Apply registry/repo replacement to the bundle image
@@ -226,15 +227,25 @@ class fbc_processor:
         # Step 6: Remove orphan bundles — bundles not referenced by any channel entry
         # e.g. old EA version replaced by new one in beta channel after a RESET
         LOGGER.info("  Purging orphan bundles...")
-        catalog_util.purge_orphan_bundles(self.catalog_dict)
+        orphan_bundles = catalog_util.purge_orphan_bundles(self.catalog_dict)
 
-        # Step 7 (optional): Purge explicitly named bundles via --purge-bundles
+        # Step 7: Purge explicitly named bundles via --purge-bundles.
         # Only removes olm.bundle entries — does NOT remove references from channel entries
-        if self.purge_bundles:
-            LOGGER.info(f"  Purging explicitly named bundles: {self.purge_bundles}")
-            catalog_util.purge_bundles(self.catalog_dict, self.purge_bundles.split(","))
+        self._purge_requested_bundles(orphan_bundles)
 
         LOGGER.info("Catalog patched successfully.")
+
+    def _purge_requested_bundles(self, already_purged=None) -> None:
+        """Apply --purge-bundles and report names absent from the catalog."""
+        requested = [name.strip() for name in self.purge_bundles.split(",") if name.strip()]
+        if not requested:
+            return
+
+        LOGGER.info(f"  Purging explicitly named bundles: {', '.join(requested)}")
+        purged = catalog_util.purge_bundles(self.catalog_dict, requested)
+        for name in requested:
+            if name not in purged and name not in (already_purged or []):
+                LOGGER.warning(f"  Requested purge bundle not found in catalog: {name}")
 
     def _apply_replacements(self, olm_bundle: Dict) -> Dict:
         """

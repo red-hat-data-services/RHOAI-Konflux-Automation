@@ -228,8 +228,7 @@ class TestPatchCatalog:
         assert operator_entry[0]['image'] == 'registry.redhat.io/rhoai/odh-rhel9-operator@sha256:def456'
 
     def test_idempotent_bundle_already_exists(self, processor_factory, tmp_path):
-        """If bundle already in catalog, patch_catalog skips everything."""
-        # Add the bundle to the catalog before patching
+        """If the bundle already exists, catalog patching remains a no-op."""
         catalog_docs = [
             make_package(),
             make_channel('fast', ['rhods-operator.3.5.0-ea.1']),
@@ -241,8 +240,9 @@ class TestPatchCatalog:
         original_dict = dict(processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA])
         processor.patch_catalog()
 
-        # Nothing changed
         assert processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA] == original_dict
+        assert processor.catalog_dict[CONSTANTS.OLM_PACKAGE_SCHEMA]['rhods-operator']['defaultChannel'] == 'stable'
+        assert 'beta' not in processor.catalog_dict[CONSTANTS.OLM_CHANNEL_SCHEMA]
 
     def test_missing_sbc_exits(self, processor_factory, tmp_path):
         """If SBC has no olm.bundle, sys.exit(1) is called."""
@@ -288,6 +288,37 @@ class TestPatchCatalog:
 
         assert 'rhods-operator.2.25.6' not in processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]
 
+    def test_explicit_purge_multiple_names_and_whitespace(self, processor_factory, caplog):
+        """Purge multiple bundles, including one already removed as an orphan."""
+        processor, _ = processor_factory(
+            purge_bundles='rhods-operator.2.25.6, rhods-operator.3.4.0-ea.2, missing, '
+        )
+        processor.patch_catalog()
+
+        bundles = processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]
+        assert 'rhods-operator.2.25.6' not in bundles
+        assert 'rhods-operator.3.4.0-ea.2' not in bundles
+        assert 'Requested purge bundle not found in catalog: missing' in caplog.text
+        assert 'Requested purge bundle not found in catalog: rhods-operator.3.4.0-ea.2' not in caplog.text
+
+    def test_existing_bundle_still_runs_explicit_purge(self, processor_factory, tmp_path):
+        """Explicit purges still apply when the incoming bundle is already present."""
+        bundle_name = 'rhods-operator.3.5.0-ea.1'
+        old_bundle = 'rhods-operator.2.25.6'
+        catalog_docs = [
+            make_package(),
+            make_channel('fast', [bundle_name, old_bundle]),
+            make_bundle(bundle_name, 'registry.redhat.io/rhoai/odh-operator-bundle@sha256:abc123'),
+            make_bundle(old_bundle, 'registry.redhat.io/rhoai/odh-operator-bundle@sha256:old'),
+        ]
+        paths = setup_processor_files(tmp_path, catalog_docs=catalog_docs)
+        processor, _ = processor_factory(paths=paths, purge_bundles=old_bundle)
+        processor.patch_catalog()
+
+        bundles = processor.catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA]
+        assert bundle_name in bundles
+        assert old_bundle not in bundles
+
     def test_no_explicit_purge(self, processor_factory):
         """Without --purge-bundles, referenced bundles are not removed."""
         processor, _ = processor_factory()
@@ -300,10 +331,9 @@ class TestPatchCatalog:
         """Simulates the Taskfile two-pass: current release then previous release."""
         # Pass 1: add current release bundle
         paths = setup_processor_files(tmp_path)
-        processor, mod = processor_factory(paths=paths)
+        processor, _ = processor_factory(paths=paths)
 
-        with patch.object(mod.util, 'fetch_file_data_from_github', return_value=''):
-            processor.catalog_build_args = 'KEY=VALUE\n'
+        processor.catalog_build_args = 'KEY=VALUE\n'
         processor.patch_catalog()
 
         # Pass 2: add previous release bundle to the same catalog
@@ -349,12 +379,32 @@ class TestPatchCatalog:
         """Non-GitHub bundle_git_url uses fetch_files_from_git_repo instead of raw.githubusercontent."""
         processor, mod = processor_factory(bundle_git_url='https://gitlab.com/redhat/rhel-ai/repo')
 
-        # Verify the processor was created successfully with GitLab URL
-        assert processor.bundle_git_url == 'https://gitlab.com/redhat/rhel-ai/repo'
-
-        # generate_catalog_build_args is called during process(), mock must be active
         with patch.object(mod.util, 'fetch_files_from_git_repo',
-                          return_value={CONSTANTS.BUNDLE_BUILD_ARGS_PATH: 'COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'}):
+                          return_value={CONSTANTS.BUNDLE_BUILD_ARGS_PATH: 'COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n'}) as clone, \
+             patch.object(mod.util, 'fetch_file_data_from_github') as github_fetch:
             processor.catalog_build_args = processor.generate_catalog_build_args()
 
+        clone.assert_called_once_with(
+            git_url='https://gitlab.com/redhat/rhel-ai/repo',
+            git_commit='abc123',
+            file_paths=[CONSTANTS.BUNDLE_BUILD_ARGS_PATH],
+        )
+        github_fetch.assert_not_called()
+        assert 'COMP_GIT_URL' in processor.catalog_build_args
+
+    def test_github_repo_uses_raw_file_fetch(self, processor_factory):
+        """GitHub bundle_git_url uses the raw file fetch rather than a clone."""
+        processor, mod = processor_factory()
+
+        with patch.object(mod.util, 'fetch_file_data_from_github',
+                          return_value='COMP_GIT_URL=http://x\nCOMP_GIT_COMMIT=abc\n') as github_fetch, \
+             patch.object(mod.util, 'fetch_files_from_git_repo') as clone:
+            processor.catalog_build_args = processor.generate_catalog_build_args()
+
+        github_fetch.assert_called_once_with(
+            git_url='https://github.com/org/repo',
+            git_commit='abc123',
+            file_path=CONSTANTS.BUNDLE_BUILD_ARGS_PATH,
+        )
+        clone.assert_not_called()
         assert 'COMP_GIT_URL' in processor.catalog_build_args
