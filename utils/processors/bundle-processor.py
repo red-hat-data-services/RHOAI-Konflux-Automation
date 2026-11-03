@@ -19,7 +19,7 @@ LOGGER = getLogger('processor')
 
 class bundle_processor:
 
-    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None, metadata_config_yaml_path:str=None, use_existing_digests:bool=False):
+    def __init__(self, build_config_path:str, bundle_csv_path:str, patch_yaml_path:str, rhoai_version:str, output_file_path:str, annotation_yaml_path:str, push_pipeline_operation:str, push_pipeline_yaml_path:str, build_type:str, xks_helm_patch_yaml_path:str=None, xks_helm_values_yaml_path:str=None, xks_helm_push_pipeline_yaml_path:str=None, openshift_helm_patch_yaml_path:str=None, openshift_helm_values_yaml_path:str=None, openshift_helm_push_pipeline_yaml_path:str=None, metadata_config_yaml_path:str=None, use_existing_digests:bool=False, operator_image_ref:str=None):
         LOGGER.info("=============================================================================")
         LOGGER.info("Initializing Bundle Processor")
         LOGGER.info("=============================================================================")
@@ -43,6 +43,7 @@ class bundle_processor:
         self.openshift_helm_chart_yaml_path = str(Path(openshift_helm_values_yaml_path).parent / 'Chart.yaml') if openshift_helm_values_yaml_path else None
         self.metadata_config_yaml_path = metadata_config_yaml_path
         self.use_existing_digests = use_existing_digests
+        self.operator_image_ref = operator_image_ref
 
         LOGGER.info(f"rhoai_version: {self.rhoai_version}")
         LOGGER.info(f"build_type: {self.build_type}")
@@ -275,6 +276,15 @@ class bundle_processor:
                 image_tag=version_tag,
                 use_github_override=True
             )
+
+            if self.operator_image_ref:
+                actual_ref = operator_image_entry[0]['value']
+                if actual_ref != self.operator_image_ref:
+                    LOGGER.error("Operator image drift detected!")
+                    LOGGER.error(f"  Expected (--operator-image-ref): {self.operator_image_ref}")
+                    LOGGER.error(f"  Actual (Quay floating tag):      {actual_ref}")
+                    sys.exit(1)
+                LOGGER.info("  Operator image ref validated: matches --operator-image-ref")
 
             return operator_image_entry, operator_git_metadata
 
@@ -877,6 +887,11 @@ if __name__ == '__main__':
     parser.add_argument('--use-existing-digests', action='store_true', default=False,
                         help='Preserve existing operator image digest instead of querying Quay for latest tag. Used for embargo builds.',
                         dest='use_existing_digests')
+    parser.add_argument('--operator-image-ref', required=False, default=None,
+                        help='Expected operator image reference (e.g. quay.io/rhoai/odh-rhel9-operator@sha256:...). '
+                             'When set, validates that the Quay-resolved operator image matches this reference. '
+                             'Exits with error if they differ, indicating image drift during processing.',
+                        dest='operator_image_ref')
     # For POC purposes: snapshot_processor arguments
     parser.add_argument('-sn', '--snapshot-json-path', required=False,
                         help='Path of the single-bundle generated using the opm.', dest='snapshot_json_path')
@@ -885,7 +900,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.operation.lower() == 'bundle-patch':
-        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path, metadata_config_yaml_path=args.metadata_config_yaml_path, use_existing_digests=args.use_existing_digests)
+        processor = bundle_processor(build_config_path=args.build_config_path, bundle_csv_path=args.bundle_csv_path, patch_yaml_path=args.patch_yaml_path, rhoai_version=args.rhoai_version, output_file_path=args.output_file_path, annotation_yaml_path=args.annotation_yaml_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, build_type=args.build_type, xks_helm_patch_yaml_path=args.xks_helm_patch_yaml_path, xks_helm_values_yaml_path=args.xks_helm_values_yaml_path, xks_helm_push_pipeline_yaml_path=args.xks_helm_push_pipeline_yaml_path, openshift_helm_patch_yaml_path=args.openshift_helm_patch_yaml_path, openshift_helm_values_yaml_path=args.openshift_helm_values_yaml_path, openshift_helm_push_pipeline_yaml_path=args.openshift_helm_push_pipeline_yaml_path, metadata_config_yaml_path=args.metadata_config_yaml_path, use_existing_digests=args.use_existing_digests, operator_image_ref=args.operator_image_ref)
         processor.process()
 
     # build_config_path = '/home/dchouras/RHODS/DevOps/RHOAI-Build-Config/config/build-config.yaml'
