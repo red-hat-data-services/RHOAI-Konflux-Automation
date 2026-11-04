@@ -1,0 +1,4 @@
+schema: olm.template.basic
+entries:
+  - schema: olm.bundle
+    image: bundle-image-uri
