@@ -26,6 +26,7 @@ regular module; it is loaded by path via importlib.
 import importlib.util
 import os
 
+import pytest
 import yaml
 
 SCRIPT_PATH = os.path.abspath(
@@ -325,3 +326,208 @@ class TestOriginalBehaviorPreserved:
             'current bundle entry must be merged into the patched channel'
         )
         assert 'rhods-operator.3.5.4' in bundles
+
+
+class TestChannelBundleReferenceValidation:
+    """Validate that channels cannot reference bundles missing from the catalog.
+
+    Guards against the scenario where extract-snapshot-images picks a stale
+    image, opm render-template produces a bundle with a stale name (e.g.
+    rhods-operator.2.25.13), but the patch file's channel entries reference
+    the latest version (e.g. rhods-operator.2.25.14). After purge_unused_olm_bundles
+    removes unreferenced bundles, the catalog would contain dangling channel
+    references. The validation must catch this before write_output_catalog.
+    """
+
+    def test_detects_missing_bundle_referenced_by_channel(self, tmp_path):
+        """
+        Simulate the stale-snapshot scenario:
+        - Base catalog has bundle .2.25.12
+        - SBC adds bundle .2.25.13 (stale opm render output)
+        - Patch file's channel entries reference .2.25.14 (the latest version)
+
+        After patching, .2.25.14 is referenced by the channel but has no
+        olm.bundle definition. The validation must raise SystemExit with a
+        clear error message naming the missing bundle.
+        """
+        base_docs = [
+            make_package(),
+            make_channel('stable-2.25', ['rhods-operator.2.25.12']),
+            make_bundle('rhods-operator.2.25.12'),
+        ]
+        # SBC adds .2.25.13 (stale), but patch references .2.25.14 (latest)
+        module = load_script_module()
+
+        base_catalog = str(tmp_path / 'input-catalog.yaml')
+        sbc = str(tmp_path / 'sbc.yaml')
+        patch = str(tmp_path / 'catalog-patch.yaml')
+        build_config = str(tmp_path / 'build-config.yaml')
+        push_pipeline = str(tmp_path / 'push-pipeline.yaml')
+        output = str(tmp_path / 'output' / 'catalog.yaml')
+
+        write_yaml_docs(base_catalog, base_docs)
+        # SBC has the stale bundle name (.2.25.13)
+        write_yaml_docs(sbc, [
+            make_package('stable-2.25'),
+            make_channel('stable-2.25', ['rhods-operator.2.25.13']),
+            make_bundle('rhods-operator.2.25.13', 'quay.io/rhoai/odh-operator-bundle@sha256:stale'),
+        ])
+        # Patch references the LATEST version (.2.25.14) — mismatch!
+        write_yaml(patch, make_patch_dict(entry='rhods-operator.2.25.14'))
+        write_yaml(build_config, make_build_config())
+        write_yaml(push_pipeline, make_push_pipeline(enabled=True))
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+
+        processor = module.fbc_processor(
+            build_config_path=build_config,
+            catalog_yaml_path=base_catalog,
+            patch_yaml_path=patch,
+            single_bundle_path=sbc,
+            output_file_path=output,
+            push_pipeline_operation='enable',
+            push_pipeline_yaml_path=push_pipeline,
+            purge_bundles='',
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            processor.patch_catalog_yaml()
+
+        # Should exit with code 1
+        assert exc_info.value.code == 1
+
+    def test_error_message_names_missing_bundle_and_channel(self, tmp_path, capsys):
+        """
+        The error message must name the missing bundle and the channel(s)
+        that reference it, so operators can diagnose the stale snapshot.
+        """
+        base_docs = [
+            make_package(),
+            make_channel('stable-2.25', ['rhods-operator.2.25.12']),
+            make_bundle('rhods-operator.2.25.12'),
+        ]
+        module = load_script_module()
+
+        base_catalog = str(tmp_path / 'input-catalog.yaml')
+        sbc = str(tmp_path / 'sbc.yaml')
+        patch_path = str(tmp_path / 'catalog-patch.yaml')
+        build_config = str(tmp_path / 'build-config.yaml')
+        push_pipeline = str(tmp_path / 'push-pipeline.yaml')
+        output = str(tmp_path / 'output' / 'catalog.yaml')
+
+        write_yaml_docs(base_catalog, base_docs)
+        write_yaml_docs(sbc, [
+            make_package('stable-2.25'),
+            make_channel('stable-2.25', ['rhods-operator.2.25.13']),
+            make_bundle('rhods-operator.2.25.13', 'quay.io/rhoai/odh-operator-bundle@sha256:stale'),
+        ])
+        write_yaml(patch_path, make_patch_dict(entry='rhods-operator.2.25.14'))
+        write_yaml(build_config, make_build_config())
+        write_yaml(push_pipeline, make_push_pipeline(enabled=True))
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+
+        processor = module.fbc_processor(
+            build_config_path=build_config,
+            catalog_yaml_path=base_catalog,
+            patch_yaml_path=patch_path,
+            single_bundle_path=sbc,
+            output_file_path=output,
+            push_pipeline_operation='enable',
+            push_pipeline_yaml_path=push_pipeline,
+            purge_bundles='',
+        )
+
+        with pytest.raises(SystemExit):
+            processor.patch_catalog_yaml()
+
+        captured = capsys.readouterr()
+        assert 'rhods-operator.2.25.14' in captured.out, \
+            'error must name the missing bundle'
+        assert 'stable-2.25' in captured.out, \
+            'error must name the channel referencing the missing bundle'
+
+    def test_valid_catalog_passes_validation(self, tmp_path):
+        """
+        A catalog where every channel entry has a corresponding olm.bundle
+        must pass the validation without error — the happy path.
+        """
+        base_docs = [
+            make_package(),
+            make_channel('stable-2.25', ['rhods-operator.2.25.12', 'rhods-operator.2.25.13']),
+            make_bundle('rhods-operator.2.25.12'),
+            make_bundle('rhods-operator.2.25.13'),
+        ]
+        processor, output = setup_script_processor(tmp_path, base_docs)
+
+        # Must not raise
+        processor.patch_catalog_yaml()
+
+        assert os.path.exists(output), 'valid catalog must be written'
+        bundles, channels = read_output_bundles_and_channels(output)
+        assert 'rhods-operator.2.25.13' in bundles
+        assert 'rhods-operator.2.25.13' in channels['stable-2.25']
+
+    def test_multiple_channels_reference_same_missing_bundle(self, tmp_path):
+        """
+        When multiple channels reference the same missing bundle, the error
+        message must list all channels.
+        """
+        base_docs = [
+            make_package(),
+            make_channel('stable-2.25', ['rhods-operator.2.25.12']),
+            make_bundle('rhods-operator.2.25.12'),
+        ]
+        module = load_script_module()
+
+        base_catalog = str(tmp_path / 'input-catalog.yaml')
+        sbc = str(tmp_path / 'sbc.yaml')
+        patch_path = str(tmp_path / 'catalog-patch.yaml')
+        build_config = str(tmp_path / 'build-config.yaml')
+        push_pipeline = str(tmp_path / 'push-pipeline.yaml')
+        output = str(tmp_path / 'output' / 'catalog.yaml')
+
+        write_yaml_docs(base_catalog, base_docs)
+        write_yaml_docs(sbc, [
+            make_package('stable-2.25'),
+            make_channel('stable-2.25', ['rhods-operator.2.25.13']),
+            make_bundle('rhods-operator.2.25.13', 'quay.io/rhoai/odh-operator-bundle@sha256:stale'),
+        ])
+        # Patch adds two channels both referencing the missing .2.25.14
+        patch_dict = {
+            'patch': {
+                'olm.package': {'name': 'rhods-operator', 'defaultChannel': 'stable-3.x'},
+                'olm.channels': [
+                    {
+                        'name': 'stable-2.25',
+                        'schema': 'olm.channel',
+                        'package': 'rhods-operator',
+                        'entries': [{'name': 'rhods-operator.2.25.14', 'replaces': 'rhods-operator.2.25.12'}],
+                    },
+                    {
+                        'name': 'fast',
+                        'schema': 'olm.channel',
+                        'package': 'rhods-operator',
+                        'entries': [{'name': 'rhods-operator.2.25.14'}],
+                    },
+                ],
+            },
+        }
+        write_yaml(patch_path, patch_dict)
+        write_yaml(build_config, make_build_config())
+        write_yaml(push_pipeline, make_push_pipeline(enabled=True))
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+
+        processor = module.fbc_processor(
+            build_config_path=build_config,
+            catalog_yaml_path=base_catalog,
+            patch_yaml_path=patch_path,
+            single_bundle_path=sbc,
+            output_file_path=output,
+            push_pipeline_operation='enable',
+            push_pipeline_yaml_path=push_pipeline,
+            purge_bundles='',
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            processor.patch_catalog_yaml()
+
+        assert exc_info.value.code == 1

@@ -60,6 +60,7 @@ class fbc_processor:
 
         self.process_push_pipeline()
         self.purge_unused_olm_bundles()
+        self.validate_channel_bundle_references()
         self.write_output_catalog()
 
     def write_output_catalog(self):
@@ -159,9 +160,31 @@ class fbc_processor:
         to_delete = [name for name in self.catalog_dict['olm.bundle'] if name not in referenced_bundles]
         print(f'to_delete: {to_delete}')
         self.purge_olm_bundles(to_delete)
-             
-        
-        
+
+    def validate_channel_bundle_references(self):
+        """Verify every bundle referenced by a channel entry has a corresponding olm.bundle definition.
+
+        Raises SystemExit if any channel entry references a bundle that does not
+        exist in the catalog. This catches the scenario where the patch file's
+        channel entries reference a bundle version that differs from the bundle
+        actually added by opm render (e.g. stale snapshot image).
+        """
+        channel_objs = self.catalog_dict['olm.channel']
+        bundle_names = set(self.catalog_dict['olm.bundle'].keys())
+        missing = {}
+        for channel_name, channel_obj in channel_objs.items():
+            for entry in channel_obj['entries']:
+                if entry['name'] not in bundle_names:
+                    missing.setdefault(entry['name'], []).append(channel_name)
+
+        if missing:
+            print('ERROR: channel entries reference bundles that do not exist in the catalog:')
+            for bundle, channels in sorted(missing.items()):
+                print(f'  missing bundle: {bundle}  (referenced by channels: {", ".join(sorted(channels))})')
+            print('This usually means the snapshot image is stale and opm rendered a '
+                  'different bundle version than the patch file expects.')
+            sys.exit(1)
+
     def patch_olm_bundles(self):
         SCHEMA = 'olm.bundle'
         current_bundle_name = self.current_olm_bundle['name']
