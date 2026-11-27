@@ -229,6 +229,16 @@ class fbc_processor:
         LOGGER.info("  Purging orphan bundles...")
         orphan_bundles = catalog_util.purge_orphan_bundles(self.catalog_dict)
 
+        # Step 6b: Validate that every channel entry references an existing bundle.
+        # Runs BEFORE explicit purges (step 7) so that --purge-bundles removals
+        # don't trigger false positives — explicit purges deliberately leave
+        # dangling channel references for the operator to clean up separately.
+        LOGGER.info("  Validating channel bundle references...")
+        missing = catalog_util.validate_channel_bundle_references(self.catalog_dict)
+        if missing:
+            LOGGER.error("Aborting: catalog would contain dangling channel references.")
+            sys.exit(1)
+
         # Step 7: Purge explicitly named bundles via --purge-bundles.
         # Only removes olm.bundle entries — does NOT remove references from channel entries
         self._purge_requested_bundles(orphan_bundles)

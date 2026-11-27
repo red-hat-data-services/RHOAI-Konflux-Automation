@@ -406,3 +406,72 @@ class TestPatchOlmChannels:
         assert 'C' in entry_names
         b_entry = [e for e in entries if e['name'] == 'B'][0]
         assert b_entry['skipRange'] == '>=1.0.0'
+
+
+# ===========================================================================
+# validate_channel_bundle_references
+# ===========================================================================
+
+class TestValidateChannelBundleReferences:
+
+    def test_all_references_valid(self):
+        """When every channel entry has a matching olm.bundle, returns empty dict."""
+        catalog = build_catalog(
+            make_package(),
+            make_channel('fast', ['A', 'B']),
+            make_bundle('A'),
+            make_bundle('B'),
+        )
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert result == {}
+
+    def test_missing_bundle_detected(self):
+        """Channel referencing a bundle not in olm.bundle is flagged."""
+        catalog = build_catalog(
+            make_package(),
+            make_channel('fast', ['A', 'B']),
+            make_bundle('A'),
+            # B is missing
+        )
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert 'B' in result
+        assert 'fast' in result['B']
+
+    def test_multiple_channels_reference_same_missing_bundle(self):
+        """Both channels that reference the same missing bundle are listed."""
+        catalog = build_catalog(
+            make_package(),
+            make_channel('fast', ['A', 'missing']),
+            make_channel('stable', ['missing']),
+            make_bundle('A'),
+        )
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert 'missing' in result
+        assert sorted(result['missing']) == ['fast', 'stable']
+
+    def test_empty_catalog(self):
+        """Empty catalog with no channels or bundles returns empty dict."""
+        catalog = build_catalog(make_package())
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert result == {}
+
+    def test_channel_with_empty_entries(self):
+        """Channel with an empty entries list is valid."""
+        catalog = build_catalog(
+            make_package(),
+            {'schema': CONSTANTS.OLM_CHANNEL_SCHEMA, 'name': 'fast',
+             'package': 'rhods-operator', 'entries': []},
+            make_bundle('A'),
+        )
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert result == {}
+
+    def test_multiple_missing_bundles(self):
+        """Each missing bundle is reported separately."""
+        catalog = build_catalog(
+            make_package(),
+            make_channel('fast', ['missing1', 'missing2']),
+        )
+        result = catalog_util.validate_channel_bundle_references(catalog)
+        assert 'missing1' in result
+        assert 'missing2' in result
