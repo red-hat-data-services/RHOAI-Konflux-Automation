@@ -9,6 +9,7 @@ from collections import defaultdict
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 import base64
 import sys
+import time
 class fbc_processor:
     PRODUCTION_REGISTRY = 'registry.redhat.io'
     # Channel names that are reset from patch (no merge with base catalog).
@@ -188,7 +189,13 @@ def str_presenter(dumper, data):
 class snapshot_processor:
     GIT_URL_LABEL_KEY = 'git.url'
     GIT_COMMIT_LABEL_KEY = 'git.commit'
-    def __init__(self, snapshot_json_path:str, output_file_path:str, rhoai_version:str, build_config_path:str, catalog_build_args_file_path, build_type:str, image_filter:str='', patch_yaml_path:str=''):
+    # The repo --expected-bundle-digest applies to, and how long to wait for the
+    # nightly tag to move to that digest and for its signature to appear (cosign
+    # lags the push).
+    BUNDLE_REPO_SUFFIX = 'odh-operator-bundle'
+    EXPECTED_DIGEST_MAX_ATTEMPTS = 10
+    EXPECTED_DIGEST_RETRY_INTERVAL = 30
+    def __init__(self, snapshot_json_path:str, output_file_path:str, rhoai_version:str, build_config_path:str, catalog_build_args_file_path, build_type:str, image_filter:str='', patch_yaml_path:str='', expected_bundle_digest:str=''):
         self.snapshot_json_path = snapshot_json_path
         self.output_file_path = output_file_path
         self.image_filter = image_filter
@@ -199,6 +206,7 @@ class snapshot_processor:
         self.git_meta = ''
         self.build_type = build_type
         self.patch_yaml_path = patch_yaml_path
+        self.expected_bundle_digest = expected_bundle_digest.strip()
 
     def extract_images_from_snapshot(self):
         snapshot = json.load(open(self.snapshot_json_path))
@@ -207,6 +215,30 @@ class snapshot_processor:
             output_images.append({'name': component['name'], 'imageUri': component['containerImage']})
 
         json.dump(output_images, indent=4, fp=open(self.output_file_path, 'w'))
+
+    def get_expected_digest_tag(self, qc, repo, version_tag, expected_digest):
+        """Return the tag entry for expected_digest once it is on the tag AND signed.
+
+        Polls for both events — Quay API lag on the tag move, cosign lag on the
+        signature — so a nightly that races its own signing step waits instead
+        of silently falling back to an older image. Returns the matching tag
+        entry, or None if neither happens within EXPECTED_DIGEST_MAX_ATTEMPTS.
+        """
+        for attempt in range(1, self.EXPECTED_DIGEST_MAX_ATTEMPTS + 1):
+            tags = qc.get_all_tags(repo, version_tag) or []
+            tag = next((t for t in tags if t.get('manifest_digest') == expected_digest), None)
+            if tag:
+                sig_tag = f'{expected_digest.replace(":", "-")}.sig'
+                if qc.get_tag_details(repo, sig_tag):
+                    return tag
+                print(f'expected digest {expected_digest} is on {repo}:{version_tag} but not signed yet '
+                      f'(attempt {attempt}/{self.EXPECTED_DIGEST_MAX_ATTEMPTS})')
+            else:
+                print(f'expected digest {expected_digest} not on {repo}:{version_tag} yet '
+                      f'(attempt {attempt}/{self.EXPECTED_DIGEST_MAX_ATTEMPTS})')
+            if attempt < self.EXPECTED_DIGEST_MAX_ATTEMPTS:
+                time.sleep(self.EXPECTED_DIGEST_RETRY_INTERVAL)
+        return None
 
     def get_all_latest_images(self):
         latest_images = []
@@ -218,6 +250,28 @@ class snapshot_processor:
             for repo_path in [repo_path for repo_path in registry_entry['repo_mappings'] if self.image_filter in repo_path]:
                 repo = '/'.join(repo_path.split('/')[1:])
                 version_tag = f'{self.rhoai_version}-nightly' if self.build_type.lower() == 'nightly' else self.rhoai_version
+
+                if self.expected_bundle_digest and repo_path.endswith(self.BUNDLE_REPO_SUFFIX):
+                    # The nightly bundle build proved it pushed this digest; pin to it
+                    # instead of taking the newest signed tag. When the tag still
+                    # carries the previous build (signature lag or a concurrent tag
+                    # move), the newest signed tag is a stale image and the rendered
+                    # single-bundle catalog gets the wrong CSV version (rhoai-2.25
+                    # nightly, 2026-11-27). Fail here rather than building the catalog
+                    # from the stale image.
+                    tag = self.get_expected_digest_tag(qc, repo, version_tag, self.expected_bundle_digest)
+                    if not tag:
+                        print(f'error: expected bundle digest {self.expected_bundle_digest} was not found (signed) on '
+                              f'{registry}/{repo_path}:{version_tag} after {self.EXPECTED_DIGEST_MAX_ATTEMPTS} attempts')
+                        print('error: refusing to fall back to the newest signed tag — it may carry a stale image; '
+                              're-run the stage once the tag and signature have settled')
+                        sys.exit(1)
+                    print(f'using expected bundle digest {self.expected_bundle_digest} for {repo_path}')
+                    latest_images.append({'name': f'RELATED_IMAGE_{repo.replace("-rhel8", "").replace("-rhel9", "").replace("-", "_").upper()}_IMAGE', 'value': DoubleQuotedScalarString(f'{registry}/{repo_path}@{tag["manifest_digest"]}')})
+                    labels = qc.get_git_labels(repo, tag["manifest_digest"])
+                    self.generate_catalog_build_args(labels)
+                    continue
+
                 tags = qc.get_all_tags(repo, version_tag)
                 if not tags:
                     print(f'no tags found for {repo}')
@@ -411,6 +465,12 @@ if __name__ == '__main__':
                         help='Path of the tekton pipeline for push builds', dest='push_pipeline_yaml_path')
     parser.add_argument('-x', '--push-pipeline-operation', required=False, default="enable",
                         help='Operation code, supported values are "enable" and "disable"', dest='push_pipeline_operation')
+    parser.add_argument('--expected-bundle-digest', required=False, default='',
+                        help='For extract-snapshot-images: pin the odh-operator-bundle image selection to this digest '
+                             '(the digest the nightly bundle build proved it pushed) instead of the newest signed tag. '
+                             'Waits for the tag to move to the digest and for its signature to appear; fails rather '
+                             'than falling back to a possibly stale image. Empty (default) keeps newest-signed behavior.',
+                        dest='expected_bundle_digest')
     parser.add_argument('--use-existing-digests', action='store_true', default=False,
                         help='For extract-snapshot-images: read bundle image from catalog-patch.yaml (-p) '
                              'instead of querying Quay for latest signed image. Uses repo_mappings from '
@@ -424,7 +484,7 @@ if __name__ == '__main__':
         processor = fbc_processor(build_config_path=args.build_config_path, catalog_yaml_path=args.catalog_yaml_path, patch_yaml_path=args.patch_yaml_path, single_bundle_path=args.single_bundle_path, output_file_path=args.output_file_path, push_pipeline_operation=args.push_pipeline_operation, push_pipeline_yaml_path=args.push_pipeline_yaml_path, purge_bundles=args.purge_bundles)
         processor.patch_catalog_yaml()
     elif args.operation.lower() == 'extract-snapshot-images':
-        processor = snapshot_processor(snapshot_json_path=args.snapshot_json_path, output_file_path=args.output_file_path, image_filter=args.image_filter, rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, catalog_build_args_file_path=args.catalog_build_args_file_path, build_type=args.build_type, patch_yaml_path=args.patch_yaml_path)
+        processor = snapshot_processor(snapshot_json_path=args.snapshot_json_path, output_file_path=args.output_file_path, image_filter=args.image_filter, rhoai_version=args.rhoai_version, build_config_path=args.build_config_path, catalog_build_args_file_path=args.catalog_build_args_file_path, build_type=args.build_type, patch_yaml_path=args.patch_yaml_path, expected_bundle_digest=args.expected_bundle_digest or '')
         if args.use_existing_digests:
             processor.get_images_from_existing_bundle()
         else:
