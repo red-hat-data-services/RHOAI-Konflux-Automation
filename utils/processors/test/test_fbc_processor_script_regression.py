@@ -531,3 +531,31 @@ class TestChannelBundleReferenceValidation:
             processor.patch_catalog_yaml()
 
         assert exc_info.value.code == 1
+
+    def test_purge_bundles_does_not_trigger_validation(self, tmp_path):
+        """
+        --purge-bundles deliberately removes a bundle that is still
+        referenced by a channel entry. The validation must NOT fire for
+        explicitly purged bundles — the operator chose to remove them and
+        is expected to update channel entries separately.
+        """
+        base_docs = [
+            make_package(),
+            make_channel('stable-2.25', ['rhods-operator.2.25.12', 'rhods-operator.2.25.13']),
+            make_bundle('rhods-operator.2.25.12'),
+            make_bundle('rhods-operator.2.25.13'),
+        ]
+        processor, output = setup_script_processor(
+            tmp_path, base_docs, sbc_bundle_name='rhods-operator.2.25.13',
+        )
+        # Explicitly purge a bundle that IS still referenced by the channel
+        processor.explicitly_purged_bundles = {'rhods-operator.2.25.12'}
+        processor.purge_olm_bundles(['rhods-operator.2.25.12'])
+
+        # Must NOT raise SystemExit — the purge was explicit
+        processor.patch_catalog_yaml()
+
+        assert os.path.exists(output), (
+            'output must be written even though a channel references a '
+            'purged bundle — the purge was explicit via --purge-bundles'
+        )

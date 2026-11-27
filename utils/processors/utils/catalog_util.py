@@ -119,6 +119,41 @@ def purge_orphan_bundles(catalog_dict: defaultdict) -> List[str]:
     return orphan_bundles
 
 
+def validate_channel_bundle_references(catalog_dict: defaultdict) -> Dict[str, List[str]]:
+    """
+    Verify every bundle referenced by a channel entry has a corresponding
+    olm.bundle definition in the catalog.
+
+    This catches the stale-snapshot scenario where the patch file's channel
+    entries reference a bundle version that differs from the bundle actually
+    added by opm render (e.g. channel entries reference rhods-operator.2.25.14
+    but the SBC only added rhods-operator.2.25.13).
+
+    Args:
+        catalog_dict: Catalog structure (read-only check).
+
+    Returns:
+        Dict mapping missing bundle names to the list of channels that
+        reference them. Empty dict when every reference is satisfied.
+    """
+    bundle_names: Set[str] = set(catalog_dict[CONSTANTS.OLM_BUNDLE_SCHEMA].keys())
+    missing: Dict[str, List[str]] = {}
+    for channel_name, channel_obj in catalog_dict[CONSTANTS.OLM_CHANNEL_SCHEMA].items():
+        for entry in channel_obj['entries']:
+            if entry['name'] not in bundle_names:
+                missing.setdefault(entry['name'], []).append(channel_name)
+
+    if missing:
+        LOGGER.error("Channel entries reference bundles that do not exist in the catalog:")
+        for bundle, channels in sorted(missing.items()):
+            LOGGER.error(f"  missing bundle: {bundle}  "
+                         f"(referenced by channels: {', '.join(sorted(channels))})")
+        LOGGER.error("This usually means the snapshot image is stale and opm rendered a "
+                     "different bundle version than the patch file expects.")
+    else:
+        LOGGER.info("  All channel bundle references are valid.")
+    return missing
+
 
 def patch_olm_package(catalog_dict: defaultdict, patch_dict: Dict) -> None:
     """

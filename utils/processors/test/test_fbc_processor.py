@@ -408,3 +408,38 @@ class TestPatchCatalog:
         )
         clone.assert_not_called()
         assert 'COMP_GIT_URL' in processor.catalog_build_args
+
+    def test_stale_snapshot_mismatch_exits(self, processor_factory, tmp_path):
+        """Stale SBC adds bundle .3.5.0-ea.0 but patch references .3.5.0-ea.1 → SystemExit."""
+        # SBC produces a stale bundle name
+        sbc_docs = make_sbc_docs(
+            bundle_name='rhods-operator.3.5.0-ea.0',
+            image='quay.io/rhoai/odh-operator-bundle@sha256:stale',
+        )
+        # Patch references the latest
+        patch_dict = make_patch_dict(
+            default_channel='stable-3.x',
+            channel_name='beta',
+            entry_name='rhods-operator.3.5.0-ea.1',
+        )
+        paths = setup_processor_files(tmp_path, sbc_docs=sbc_docs, patch_dict=patch_dict)
+        processor, _ = processor_factory(paths=paths)
+
+        with pytest.raises(SystemExit):
+            processor.patch_catalog()
+
+    def test_explicit_purge_does_not_trigger_validation(self, processor_factory, tmp_path):
+        """--purge-bundles on a still-referenced bundle must NOT trigger validation error."""
+        bundle_name = 'rhods-operator.3.5.0-ea.1'
+        old_bundle = 'rhods-operator.2.25.6'
+        catalog_docs = [
+            make_package(),
+            make_channel('fast', [bundle_name, old_bundle]),
+            make_bundle(bundle_name, 'registry.redhat.io/rhoai/odh-operator-bundle@sha256:abc123'),
+            make_bundle(old_bundle, 'registry.redhat.io/rhoai/odh-operator-bundle@sha256:old'),
+        ]
+        paths = setup_processor_files(tmp_path, catalog_docs=catalog_docs)
+        processor, _ = processor_factory(paths=paths, purge_bundles=old_bundle)
+
+        # Must NOT raise — purge is explicit and happens after validation
+        processor.patch_catalog()

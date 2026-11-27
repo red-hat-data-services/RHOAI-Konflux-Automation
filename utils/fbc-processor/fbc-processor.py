@@ -21,6 +21,7 @@ class fbc_processor:
         self.single_bundle_path = single_bundle_path
         self.output_file_path = output_file_path
         self.catalog_dict:defaultdict = self.parse_catalog_yaml()
+        self.explicitly_purged_bundles = set(name for name in purge_bundles.split(",") if name.strip())
         self.purge_olm_bundles(purge_bundles.split(","))
         self.patch_dict = self.parse_patch_yaml()
         self.build_config = yaml.safe_load(open(self.build_config_path))
@@ -168,13 +169,17 @@ class fbc_processor:
         exist in the catalog. This catches the scenario where the patch file's
         channel entries reference a bundle version that differs from the bundle
         actually added by opm render (e.g. stale snapshot image).
+
+        Bundles removed via --purge-bundles are excluded from this check because
+        the operator explicitly chose to remove them and is expected to update
+        channel entries separately.
         """
         channel_objs = self.catalog_dict['olm.channel']
         bundle_names = set(self.catalog_dict['olm.bundle'].keys())
         missing = {}
         for channel_name, channel_obj in channel_objs.items():
             for entry in channel_obj['entries']:
-                if entry['name'] not in bundle_names:
+                if entry['name'] not in bundle_names and entry['name'] not in self.explicitly_purged_bundles:
                     missing.setdefault(entry['name'], []).append(channel_name)
 
         if missing:
